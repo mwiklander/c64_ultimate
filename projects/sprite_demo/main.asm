@@ -52,32 +52,9 @@ text_loop:
         bne text_loop
 text_done:
 
-        ; Draw a two-layer platform (grass + brick).
-        ; X range matches runner turn points: 72..232 (+ sprite width on right).
-        ldx #0
-platform_loop:
-        lda #102        ; 'f' style texture for grass row
-        sta $06d6,x
-        lda #$05        ; Green
-        sta $dad6,x
-
-        lda #66         ; 'b' style texture for brick row
-        sta $06fe,x
-        lda #$08        ; Orange
-        sta $dafe,x
-        inx
-        cpx #23
-        bne platform_loop
-
-        ; Sprite 0 initial position.
-        lda #72
-        sta x_pos
-        lda #172
-        sta y_pos
-        lda x_pos
-        sta $d000
-        lda y_pos
-        sta $d001
+        lda #0
+        sta current_level
+        jsr start_level
 
         ; Sprite pointers in screen memory.
         ; $2000/64 = $80 (frame A), $2040/64 = $81 (frame B).
@@ -125,10 +102,37 @@ main_loop:
         beq state_running
         cmp #1
         beq state_falling
+        cmp #3
+        beq state_level_complete
+        cmp #4
+        beq state_final_won
         jmp main_loop
+
+state_level_complete:
+        jsr animate_win
+        inc win_timer
+        lda win_timer
+        cmp #70
+        bcc update_sprite
+
+        lda #0
+        sta win_timer
+        inc current_level
+        jsr clear_center_message
+        jsr start_level
+        jmp update_sprite
+
+state_final_won:
+        jsr animate_final_win
+        jmp update_sprite
 
 state_running:
         jsr handle_input
+        jsr update_jump
+        jsr check_win_target
+        lda game_state
+        cmp #3
+        beq update_sprite
         jsr check_platform_support
         jmp update_sprite
 
@@ -137,6 +141,15 @@ state_falling:
         clc
         adc #3
         sta y_pos
+        jsr feet_support
+        bcc still_falling
+
+        jsr settle_after_fall
+        lda #0
+        sta game_state
+        jmp update_sprite
+
+still_falling:
         cmp #245
         bcc update_sprite
 
@@ -170,66 +183,406 @@ frame_a:
         jmp main_loop
 
 handle_input:
-        ; Direct keyboard matrix scan for held-key movement.
-        ; Z = PA1/PB4, X = PA2/PB7.
+        jsr poll_controls
+
+        lda #0
+        sta dir_pressed
+
+        lda left_down
+        beq check_right
+        jsr key_left
+        lda #1
+        sta dir_pressed
+        lda #1
+        sta jump_air_dir
+        jmp check_jump
+
+check_right:
+        lda right_down
+        beq check_jump
+        jsr key_right
+        lda #1
+        sta dir_pressed
+        lda #2
+        sta jump_air_dir
+
+check_jump:
+        lda space_down
+        beq maybe_air_continue
+        lda jump_phase
+        bne maybe_air_continue
+        lda #1
+        sta jump_phase
+        lda dir_pressed
+        bne done_input
+        ; If this frame misses X/Z while SPACE starts jump, inherit facing.
+        lda direction
+        beq jump_face_right
+        lda #1
+        sta jump_air_dir
+        jmp done_input
+
+jump_face_right:
+        lda #2
+        sta jump_air_dir
+        jmp done_input
+
+maybe_air_continue:
+        lda jump_phase
+        beq done_input
+        lda dir_pressed
+        bne done_input
+        lda jump_air_dir
+        beq done_input
+        cmp #1
+        beq air_left
+        jsr key_right
+        jmp done_input
+
+air_left:
+        jsr key_left
+
+done_input:
+        lda #$ff
+        sta $dc00
+        rts
+
+key_left:
+        lda x_pos
+        cmp #68
+        bcc try_scroll_left
+        jsr blocked_left
+        bcs left_blocked
+        lda x_pos
+        sec
+        sbc #2
+        jmp store_left
+
+try_scroll_left:
+        lda scroll_col
+        beq hard_left
+        dec scroll_col
+        jsr draw_world
+        jsr blocked_left
+        bcc left_ok_after_scroll
+        inc scroll_col
+        jsr draw_world
+        rts
+
+left_ok_after_scroll:
+        lda x_pos
+        jmp store_left
+
+hard_left:
+        lda x_pos
+        beq store_left
+        jsr blocked_left
+        bcs left_blocked
+        lda x_pos
+        sec
+        sbc #2
+store_left:
+        sta x_pos
+        lda #1
+        sta direction
+        rts
+
+left_blocked:
+        rts
+
+key_right:
+        lda x_pos
+        cmp #208
+        bcs try_scroll_right
+        jsr blocked_right
+        bcs right_blocked
+        lda x_pos
+        clc
+        adc #2
+        jmp store_right
+
+try_scroll_right:
+        lda scroll_col
+        cmp max_scroll
+        bcs hard_right
+        inc scroll_col
+        jsr draw_world
+        jsr blocked_right
+        bcc right_ok_after_scroll
+        dec scroll_col
+        jsr draw_world
+        rts
+
+right_ok_after_scroll:
+        lda x_pos
+        jmp store_right
+
+hard_right:
+        lda x_pos
+        cmp #232
+        bcs store_right
+        jsr blocked_right
+        bcs right_blocked
+        lda x_pos
+        clc
+        adc #2
+store_right:
+        sta x_pos
+        lda #0
+        sta direction
+        rts
+
+right_blocked:
+        rts
+
+blocked_left:
+        lda x_pos
+        clc
+        adc #2
+        pha
+        lda y_pos
+        clc
+        adc #6
+        tay
+        pla
+        jsr is_solid_at
+        bcs blocked_yes
+
+        lda x_pos
+        clc
+        adc #2
+        pha
+        lda y_pos
+        clc
+        adc #18
+        tay
+        pla
+        jsr is_solid_at
+        bcs blocked_yes
+        clc
+        rts
+
+blocked_right:
+        lda x_pos
+        clc
+        adc #21
+        pha
+        lda y_pos
+        clc
+        adc #6
+        tay
+        pla
+        jsr is_solid_at
+        bcs blocked_yes
+
+        lda x_pos
+        clc
+        adc #21
+        pha
+        lda y_pos
+        clc
+        adc #18
+        tay
+        pla
+        jsr is_solid_at
+        bcs blocked_yes
+        clc
+        rts
+
+blocked_yes:
+        sec
+        rts
+
+poll_controls:
+        ; Z = PA1/PB4, X = PA2/PB7, SPACE = PA7/PB4.
+        lda #0
+        sta left_down
+        sta right_down
+        sta space_down
+
         lda #$fd
         sta $dc00
         lda $dc01
         and #%00010000
-        beq key_left
+        bne z_done
+        lda #1
+        sta left_down
+z_done:
 
         lda #$fb
         sta $dc00
         lda $dc01
         and #%10000000
-        beq key_right
-        jmp no_key
+        bne x_done
+        lda #1
+        sta right_down
+x_done:
 
-key_left:
-        lda x_pos
-        beq store_left
-        sec
-        sbc #2
-store_left:
-        sta x_pos
+        lda #$7f
+        sta $dc00
+        lda $dc01
+        and #%00010000
+        bne space_done
+        lda #1
+        sta space_down
+space_done:
+
         lda #$ff
         sta $dc00
-        lda #1
-        sta direction
         rts
 
-key_right:
+update_jump:
+        lda jump_phase
+        beq jump_done
+        tax
+        lda ground_y
+        sec
+        sbc jump_table-1,x
+        sta y_pos
+
+        ; Head collision while rising: force descent.
+        cpx #7
+        bcs skip_head_check
         lda x_pos
-        cmp #253
-        bcs store_right
+        clc
+        adc #6
+        pha
+        lda y_pos
         clc
         adc #2
-store_right:
-        sta x_pos
-        lda #$ff
-        sta $dc00
-        lda #0
-        sta direction
-        rts
+        tay
+        pla
+        jsr is_solid_at
+        bcs force_descent
 
-no_key:
-        lda #$ff
-        sta $dc00
+        lda x_pos
+        clc
+        adc #18
+        pha
+        lda y_pos
+        clc
+        adc #2
+        tay
+        pla
+        jsr is_solid_at
+        bcc skip_head_check
+
+force_descent:
+        lda #8
+        sta jump_phase
+
+skip_head_check:
+        inc jump_phase
+        lda jump_phase
+        cmp #13
+        bcc jump_done
+        lda #0
+        sta jump_phase
+        sta jump_air_dir
+        lda ground_y
+        sta y_pos
+jump_done:
         rts
 
 check_platform_support:
-        ; Use sprite center/feet area rather than left edge for support checks.
-        ; Platform pixels span X=72..255, so left-edge X support is ~60..243.
-        lda x_pos
-        cmp #59
-        bcc start_fall
-        cmp #244
-        bcs start_fall
-        rts
+        lda jump_phase
+        beq check_ground_support
 
+        ; During descent, allow landing on any solid tile layer.
+        cmp #8
+        bcc support_ok
+        jsr feet_support
+        bcc support_ok
+        lda #0
+        sta jump_phase
+        jsr settle_after_fall
+        jmp support_ok
+
+check_ground_support:
+        jsr feet_support
+        bcs support_ok
 start_fall:
         lda #1
         sta game_state
+
+support_ok:
+        rts
+
+feet_support:
+        ; Check both feet so edge cases do not drop through immediately.
+        lda x_pos
+        clc
+        adc #6
+        pha
+        lda y_pos
+        clc
+        adc #21
+        tay
+        pla
+        jsr is_solid_at
+        bcs feet_hit
+
+        lda x_pos
+        clc
+        adc #18
+        pha
+        lda y_pos
+        clc
+        adc #21
+        tay
+        pla
+        jsr is_solid_at
+        rts
+
+feet_hit:
+        sec
+        rts
+
+settle_after_fall:
+        ; Back up until feet are no longer inside a solid tile, then step down
+        ; one pixel to stand exactly on the surface.
+settle_up_loop:
+        jsr feet_support
+        bcc settle_down_one
+        dec y_pos
+        jmp settle_up_loop
+
+settle_down_one:
+        inc y_pos
+        lda y_pos
+        sta ground_y
+        rts
+
+align_to_hit_row:
+        lda hit_row
+        asl
+        asl
+        asl
+        clc
+        adc #51         ; Screen text area starts around raster Y=51
+        sec
+        sbc #20
+        sta y_pos
+        lda y_pos
+        sta ground_y
+        rts
+
+is_solid_at:
+        jsr get_tile_at
+        bcc not_solid
+        sta hit_tile
+        cmp #1
+        beq solid_now
+        cmp #2
+        beq solid_now
+        cmp #3
+        beq solid_now
+not_solid:
+        clc
+        rts
+
+solid_now:
+        sec
         rts
 
 draw_game_over:
@@ -243,6 +596,405 @@ game_over_loop:
         inx
         bne game_over_loop
 game_over_done:
+        rts
+
+draw_you_won:
+        ldx #0
+you_won_loop:
+        lda you_won_text,x
+        beq you_won_done
+        sta $05ec,x
+        lda #$05        ; Green text
+        sta $d9ec,x
+        inx
+        bne you_won_loop
+you_won_done:
+        rts
+
+check_win_target:
+        lda x_pos
+        clc
+        adc #12
+        cmp #24
+        bcc no_win
+        sec
+        sbc #24
+        lsr
+        lsr
+        lsr
+        clc
+        adc scroll_col
+        sta flag_col
+
+        jsr has_flag_at_col
+        bcs win_hit
+
+        lda flag_col
+        beq check_right_col
+        dec flag_col
+        jsr has_flag_at_col
+        bcs win_hit
+        inc flag_col
+
+check_right_col:
+        inc flag_col
+        jsr has_flag_at_col
+        bcc no_win
+
+win_hit:
+        lda y_pos
+        sta win_base_y
+        lda #0
+        sta win_tick
+
+        lda current_level
+        cmp #1
+        bcs final_win
+
+        lda #3
+        sta game_state
+        jsr draw_level_complete
+        rts
+
+final_win:
+        lda #4
+        sta game_state
+        jsr draw_you_won
+no_win:
+        rts
+
+has_flag_at_col:
+        lda flag_col
+        cmp level_width
+        bcs no_flag
+        sta world_col
+        ldx #0
+flag_row_loop:
+        txa
+        jsr get_tile_by_row
+        cmp #4
+        beq yes_flag
+        inx
+        cpx level_height
+        bcc flag_row_loop
+no_flag:
+        clc
+        rts
+yes_flag:
+        sec
+        rts
+
+animate_win:
+        inc win_tick
+
+        ; Small bounce.
+        lda win_tick
+        and #%00000111
+        cmp #4
+        bcc win_up
+        lda win_base_y
+        sta y_pos
+        jmp win_color
+
+win_up:
+        lda win_base_y
+        sec
+        sbc #2
+        sta y_pos
+
+win_color:
+        lda win_tick
+        and #%00000011
+        bne color_1
+        lda #$01        ; white
+        sta $d027
+        rts
+
+color_1:
+        cmp #1
+        bne color_2
+        lda #$07        ; yellow
+        sta $d027
+        rts
+
+color_2:
+        cmp #2
+        bne color_3
+        lda #$0a        ; light red
+        sta $d027
+        rts
+
+color_3:
+        lda #$03        ; cyan
+        sta $d027
+        rts
+
+animate_final_win:
+        jsr animate_win
+        lda win_tick
+        and #%00000111
+        bne no_border_flash
+        lda $d020
+        clc
+        adc #1
+        and #$0f
+        sta $d020
+no_border_flash:
+        rts
+
+draw_level_complete:
+        ldx #0
+        lda current_level
+        beq draw_lvl1
+
+draw_lvl2:
+lvl2_loop:
+        lda level2_complete_text,x
+        beq level_complete_done
+        sta $05e6,x
+        lda #$07
+        sta $d9e6,x
+        inx
+        bne lvl2_loop
+
+draw_lvl1:
+lvl1_loop:
+        lda level1_complete_text,x
+        beq level_complete_done
+        sta $05e6,x
+        lda #$07
+        sta $d9e6,x
+        inx
+        bne lvl1_loop
+
+level_complete_done:
+        rts
+
+clear_center_message:
+        ldx #0
+clear_center_loop:
+        lda #32
+        sta $05e0,x
+        lda #$01
+        sta $d9e0,x
+        inx
+        cpx #24
+        bne clear_center_loop
+        rts
+
+draw_world:
+        ldx #0
+draw_world_loop:
+        txa
+        clc
+        adc scroll_col
+        sta world_col
+
+        ; Clear dynamic world rows to sky.
+        lda #46
+        sta $06a8,x
+        sta $06d0,x
+        sta $06f8,x
+        sta $0720,x
+        sta $0748,x
+        lda #$0b
+        sta $daa8,x
+        sta $dad0,x
+        sta $daf8,x
+        sta $db20,x
+        sta $db48,x
+
+        ; Level row 0 -> screen row 17
+        lda #0
+        jsr get_tile_by_row
+        jsr draw_tile_row17
+
+        ; Level row 1 -> screen row 18
+        lda #1
+        jsr get_tile_by_row
+        jsr draw_tile_row18
+
+        ; Level row 2 -> screen row 19
+        lda #2
+        jsr get_tile_by_row
+        jsr draw_tile_row19
+
+        ; Level row 3 -> screen row 20
+        lda #3
+        jsr get_tile_by_row
+        jsr draw_tile_row20
+
+        ; Level row 4 -> screen row 21
+        lda #4
+        jsr get_tile_by_row
+        jsr draw_tile_row21
+
+draw_next:
+        inx
+        cpx #40
+        bne draw_world_loop
+        rts
+
+draw_tile_row17:
+        jsr decode_tile_char_color
+        sta $06a8,x
+        tya
+        sta $daa8,x
+        rts
+
+draw_tile_row18:
+        jsr decode_tile_char_color
+        sta $06d0,x
+        tya
+        sta $dad0,x
+        rts
+
+draw_tile_row19:
+        jsr decode_tile_char_color
+        sta $06f8,x
+        tya
+        sta $daf8,x
+        rts
+
+draw_tile_row20:
+        jsr decode_tile_char_color
+        sta $0720,x
+        tya
+        sta $db20,x
+        rts
+
+draw_tile_row21:
+        jsr decode_tile_char_color
+        sta $0748,x
+        tya
+        sta $db48,x
+        rts
+
+decode_tile_char_color:
+        ; Tile ids: 0 sky, 1 ground, 2 stone, 3 grass/top, 4 flag
+        cmp #1
+        beq tile_ground
+        cmp #2
+        beq tile_stone
+        cmp #3
+        beq tile_grass
+        cmp #4
+        beq tile_flag
+        lda #46
+        ldy #$0b
+        rts
+
+tile_ground:
+        lda #66
+        ldy #$08
+        rts
+
+tile_stone:
+        lda #81
+        ldy #$0c
+        rts
+
+tile_grass:
+        lda #102
+        ldy #$05
+        rts
+
+tile_flag:
+        lda #47
+        ldy #$07
+        rts
+
+get_tile_at:
+        sta sample_x
+        sty sample_y
+
+        lda sample_x
+        cmp #24
+        bcc no_tile
+        sec
+        sbc #24
+        lsr
+        lsr
+        lsr
+        clc
+        adc scroll_col
+        sta world_col
+        cmp level_width
+        bcs no_tile
+
+        lda sample_y
+        sec
+        sbc #51
+        bcc no_tile
+        lsr
+        lsr
+        lsr
+        sta hit_row
+        sec
+        sbc #17
+        bcc no_tile
+        cmp level_height
+        bcs no_tile
+
+        jsr get_tile_by_row
+        sec
+        rts
+
+no_tile:
+        lda #0
+        clc
+        rts
+
+get_tile_by_row:
+        ; A = level row index (0..level_height-1), returns tile id in A for current world_col.
+        jsr set_level_row_ptr
+        ldy world_col
+        lda ($fb),y
+        rts
+
+set_level_row_ptr:
+        ; A = row index. Selects row pointer from current level register table.
+        sta row_index
+        lda current_level
+        asl
+        asl
+        clc
+        adc current_level
+        clc
+        adc row_index
+        tay
+        lda level_row_ptr_lo,y
+        sta $fb
+        lda level_row_ptr_hi,y
+        sta $fc
+        rts
+
+start_level:
+        lda #0
+        sta scroll_col
+        lda #112
+        sta x_pos
+        lda #96
+        sta y_pos
+        lda #1
+        sta game_state
+        lda #0
+        sta jump_phase
+        sta jump_air_dir
+        sta win_tick
+        lda #140
+        sta ground_y
+
+        lda current_level
+        tay
+        lda level_width_table,y
+        sta level_width
+        lda level_height_table,y
+        sta level_height
+        lda level_max_scroll_table,y
+        sta max_scroll
+
+        jsr draw_world
         rts
 
 wait_frame:
@@ -260,18 +1012,51 @@ x_pos:
         .byte 72
 
 y_pos:
-        .byte 172
+        .byte 96
 
 direction:
         .byte 0          ; 0 = right, 1 = left
 
 game_state:
-        .byte 0          ; 0 = running, 1 = falling, 2 = game over
+        .byte 1          ; 0 = running, 1 = falling, 2 = game over
 
 anim_tick:
         .byte 0
 
 frame_delay:
+        .byte 0
+
+scroll_col:
+        .byte 0
+
+jump_phase:
+        .byte 0
+
+left_down:
+        .byte 0
+
+right_down:
+        .byte 0
+
+space_down:
+        .byte 0
+
+dir_pressed:
+        .byte 0
+
+jump_air_dir:
+        .byte 0          ; 0=none, 1=left, 2=right
+
+ground_y:
+        .byte 140
+
+win_tick:
+        .byte 0
+
+win_base_y:
+        .byte 140
+
+flag_col:
         .byte 0
 
 banner:
@@ -282,6 +1067,160 @@ game_over_text:
         ; Screen codes avoid PETSCII/charset ambiguity.
         .byte 32,7,1,13,5,32,15,22,5,18,33,32
         .byte 0
+
+you_won_text:
+        .byte 32,25,15,21,32,23,15,14,33,32
+        .byte 0
+
+level1_complete_text:
+        .byte 32,12,5,22,5,12,32,49,32,3,15,13,16,12,5,20,5,32
+        .byte 0
+
+level2_complete_text:
+        .byte 32,12,5,22,5,12,32,50,32,3,15,13,16,12,5,20,5,32
+        .byte 0
+
+jump_table:
+        ; 12-frame jump arc as Y offsets from current ground/platform.
+        .byte 0,4,9,15,20,24,20,15,9,4,1,0
+
+sample_x:
+        .byte 0
+
+sample_y:
+        .byte 0
+
+hit_row:
+        .byte 0
+
+hit_tile:
+        .byte 0
+
+world_col:
+        .byte 0
+
+row_index:
+        .byte 0
+
+row_ptr_lo:
+        .byte 0
+
+row_ptr_hi:
+        .byte 0
+
+level_width:
+        .byte 80
+
+level_height:
+        .byte 5
+
+max_scroll:
+        .byte 40
+
+current_level:
+        .byte 0
+
+win_timer:
+        .byte 0
+
+level_width_table:
+        .byte 96,96
+
+level_height_table:
+        .byte 5,5
+
+level_max_scroll_table:
+        .byte 56,56
+
+level_row_ptr_lo:
+        .byte <level1_row0,<level1_row1,<level1_row2,<level1_row3,<level1_row4
+        .byte <level2_row0,<level2_row1,<level2_row2,<level2_row3,<level2_row4
+
+level_row_ptr_hi:
+        .byte >level1_row0,>level1_row1,>level1_row2,>level1_row3,>level1_row4
+        .byte >level2_row0,>level2_row1,>level2_row2,>level2_row3,>level2_row4
+
+; Level 1 (80x5), tile ids: 0 sky, 1 ground, 2 stone, 3 grass, 4 flag
+level1_row0:
+        .byte 0,0,0,0,0,0,0,0,0,0,0,3,3,3,0,0
+        .byte 0,0,0,0,0,0,0,0,3,3,3,0,0,0,0,0
+        .byte 0,0,0,0,0,3,3,3,0,0,0,0,0,0,0,0
+        .byte 0,0,0,0,0,0,0,0,0,3,3,3,0,0,0,0
+        .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+        .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+
+level1_row1:
+        .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+        .byte 0,0,2,0,0,0,0,0,0,0,0,2,0,0,0,0
+        .byte 0,0,0,0,0,0,0,0,2,0,0,0,0,0,0,0
+        .byte 0,0,0,0,0,0,0,0,0,0,2,0,0,0,0,0
+        .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+        .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+
+level1_row2:
+        .byte 0,0,0,0,2,0,0,0,0,0,0,0,0,2,0,0
+        .byte 0,0,0,0,0,0,2,0,0,0,0,0,0,0,0,0
+        .byte 0,2,0,0,0,0,0,0,0,0,0,2,0,0,0,0
+        .byte 0,0,0,0,0,0,0,2,0,0,0,0,0,0,0,0
+        .byte 0,0,0,0,0,0,0,0,0,0,4,0,0,0,0,0
+        .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+
+level1_row3:
+        .byte 3,3,3,3,3,3,3,3,3,3,0,0,3,3,3,3
+        .byte 3,3,3,3,3,3,3,0,0,0,3,3,3,3,3,3
+        .byte 3,3,3,3,0,0,3,3,3,3,3,3,3,0,0,3
+        .byte 3,3,3,3,3,3,3,3,0,0,3,3,3,3,3,3
+        .byte 3,3,3,3,3,3,4,3,3,3,3,3,3,3,3,3
+        .byte 3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3
+
+level1_row4:
+        .byte 1,1,1,1,1,1,1,1,1,1,0,0,1,1,1,1
+        .byte 1,1,1,1,1,1,1,0,0,0,1,1,1,1,1,1
+        .byte 1,1,1,1,0,0,1,1,1,1,1,1,1,0,0,1
+        .byte 1,1,1,1,1,1,1,1,0,0,1,1,1,1,1,1
+        .byte 1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1
+        .byte 1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1
+
+; Level 2 adds stepped higher ground and a right-side flag.
+level2_row0:
+        .byte 0,0,0,3,3,0,0,0,0,0,0,0,3,3,3,0
+        .byte 0,0,0,0,0,3,3,3,0,0,0,0,0,0,3,3
+        .byte 3,0,0,0,0,0,0,3,3,3,0,0,0,0,0,0
+        .byte 3,3,3,0,0,0,0,0,0,3,3,3,0,0,0,0
+        .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+        .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+
+level2_row1:
+        .byte 0,0,0,0,0,0,2,0,0,0,0,0,0,0,0,0
+        .byte 2,0,0,0,0,0,0,0,2,0,0,0,0,0,0,0
+        .byte 0,0,0,2,0,0,0,0,0,0,2,0,0,0,0,0
+        .byte 0,0,0,0,0,2,0,0,0,0,0,0,0,0,2,0
+        .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+        .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+
+level2_row2:
+        .byte 0,2,0,0,0,0,0,0,0,2,0,0,0,0,0,0
+        .byte 0,0,0,0,2,0,0,0,0,0,0,0,2,0,0,0
+        .byte 0,0,0,0,0,0,0,2,0,0,0,0,0,0,0,0
+        .byte 0,2,0,0,0,0,0,0,0,0,2,0,0,0,0,0
+        .byte 0,0,0,0,0,0,0,0,0,0,0,0,4,0,0,0
+        .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+
+level2_row3:
+        .byte 3,3,3,3,3,3,3,0,0,3,3,3,3,3,3,3
+        .byte 3,0,0,3,3,3,3,3,3,3,0,0,3,3,3,3
+        .byte 3,3,3,3,3,0,0,3,3,3,3,3,3,3,0,0
+        .byte 3,3,3,3,3,3,3,3,0,0,3,3,3,3,3,3
+        .byte 3,3,3,3,3,3,3,3,3,3,3,4,3,3,3,3
+        .byte 3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3
+
+level2_row4:
+        .byte 1,1,1,1,1,1,1,0,0,1,1,1,1,1,1,1
+        .byte 1,0,0,1,1,1,1,1,1,1,0,0,1,1,1,1
+        .byte 1,1,1,1,1,0,0,1,1,1,1,1,1,1,0,0
+        .byte 1,1,1,1,1,1,1,1,0,0,1,1,1,1,1,1
+        .byte 1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1
+        .byte 1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1
 
 *=$2000
 sprite_frame_a:
