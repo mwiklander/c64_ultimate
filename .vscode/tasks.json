@@ -5,6 +5,9 @@
       "label": "Run on C64",
       "type": "shell",
       "command": "./shell/build.sh",
+      "args": [
+        "${file}"
+      ],
       "group": {
         "kind": "build",
         "isDefault": true
