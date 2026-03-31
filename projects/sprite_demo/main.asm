@@ -57,17 +57,20 @@ fill_color:
 
         ; Sprite pointers in screen memory.
         ; $2000/64 = $80 (frame A), $2040/64 = $81 (frame B).
+        ; $2100/64 = $84 (bird frame A), $2140/64 = $85 (bird frame B).
         ; $2080/64 = $82 (cloud A), $20c0/64 = $83 (cloud B).
         lda #$80
         sta $07f8
-        lda #$82
+        lda #$84
         sta $07f9
-        lda #$83
+        lda #$82
         sta $07fa
+        lda #$83
+        sta $07fb
 
         ; Multicolor sprite setup.
         lda $d01c
-        ora #%00000001
+        ora #%00000011
         sta $d01c
         lda #$0a
         sta $d025       ; Shared multicolor 0 (light red)
@@ -78,7 +81,7 @@ fill_color:
 
         ; Keep X MSB clear so X stays in 0-255 range.
         lda $d010
-        and #%11111000
+        and #%11110000
         sta $d010
 
         ; Keep sprite in front of character graphics.
@@ -86,23 +89,26 @@ fill_color:
         and #%11111110
         sta $d01b
 
-        ; Enable sprite 0.
+        ; Enable sprite 0, clouds, and bird.
         lda $d015
-        ora #%00000111
+        ora #%00001111
         sta $d015
 
         ; Clouds are white, double width, and double height.
         lda #$01
         sta $d028
         sta $d029
+        sta $d02a
+        sta $d02b
         lda $d01d
-        ora #%00000110
+        ora #%00001100
         sta $d01d
         lda $d017
-        ora #%00000110
+        ora #%00001100
         sta $d017
 
         jsr init_clouds
+        jsr init_bird
         jsr init_sid
 
         ; Re-enable IRQ so KERNAL keyboard scan/GETIN works.
@@ -118,6 +124,7 @@ main_loop:
 
         jsr check_star_cheat
         jsr update_clouds
+        jsr update_bird
         jsr update_audio
 
         lda game_state
@@ -520,13 +527,136 @@ init_clouds:
         lda #112
         sta cloud2_y
         lda #255
-        sta $d003
         sta $d005
+        sta $d007
         rts
 
 update_clouds:
         jsr update_cloud1
         jsr update_cloud2
+        rts
+
+init_bird:
+        jsr random_bird_delay
+        sta bird_delay
+        lda #250
+        sta bird_x
+        lda #84
+        sta bird_y
+        lda #0
+        sta bird_tick
+        sta bird_chirp_cooldown
+        lda #255
+        sta $d003
+        rts
+
+update_bird:
+        lda bird_chirp_cooldown
+        beq bird_cooldown_done
+        dec bird_chirp_cooldown
+bird_cooldown_done:
+
+        lda bird_delay
+        beq bird_active
+        dec bird_delay
+        beq bird_launch
+        lda #255
+        sta $d003
+        rts
+
+bird_launch:
+        jsr random_bird_y
+        sta bird_y
+        lda #250
+        sta bird_x
+        lda #0
+        sta bird_tick
+
+bird_active:
+        inc bird_tick
+        lda bird_tick
+        and #%00000001
+        bne bird_draw_current
+
+        lda bird_x
+        sec
+        sbc #1
+        sta bird_x
+        cmp #2
+        bcs bird_draw
+
+        jsr random_bird_delay
+        sta bird_delay
+        lda #250
+        sta bird_x
+        lda #255
+        sta $d003
+        rts
+
+bird_draw_current:
+        lda bird_x
+        sta $d002
+        jsr set_bird_frame
+        jsr set_bird_y
+        jsr maybe_bird_chirp
+        rts
+
+bird_draw:
+        sta $d002
+        jsr set_bird_frame
+        jsr set_bird_y
+        jsr maybe_bird_chirp
+        rts
+
+set_bird_frame:
+        lda bird_tick
+        and #%00000100
+        beq bird_frame_a
+        lda #$85
+        sta $07f9
+        rts
+
+bird_frame_a:
+        lda #$84
+        sta $07f9
+        rts
+
+set_bird_y:
+        lda bird_tick
+        and #%00000010
+        beq bird_y_base
+        lda bird_y
+        sec
+        sbc #1
+        sta $d003
+        rts
+
+bird_y_base:
+        lda bird_y
+        sta $d003
+        rts
+
+maybe_bird_chirp:
+        lda bird_chirp_cooldown
+        bne bird_chirp_done
+        lda sound_timer
+        bne bird_chirp_done
+
+        lda bird_x
+        sec
+        sbc x_pos
+        bcs bird_diff_ready
+        eor #$ff
+        clc
+        adc #1
+bird_diff_ready:
+        cmp #10
+        bcs bird_chirp_done
+
+        jsr sfx_bird
+        lda #40
+        sta bird_chirp_cooldown
+bird_chirp_done:
         rts
 
 update_cloud1:
@@ -535,7 +665,7 @@ update_cloud1:
         dec cloud1_delay
         beq cloud1_launch
         lda #255
-        sta $d003
+        sta $d005
         rts
 
 cloud1_launch:
@@ -561,20 +691,20 @@ cloud1_active:
         jsr random_delay
         sta cloud1_delay
         lda #255
-        sta $d003
+        sta $d005
         rts
 
 cloud1_draw_current:
         lda cloud1_x
-        sta $d002
+        sta $d004
         lda cloud1_y
-        sta $d003
+        sta $d005
         rts
 
 cloud1_draw:
-        sta $d002
+        sta $d004
         lda cloud1_y
-        sta $d003
+        sta $d005
         rts
 
 update_cloud2:
@@ -583,7 +713,7 @@ update_cloud2:
         dec cloud2_delay
         beq cloud2_launch
         lda #255
-        sta $d005
+        sta $d007
         rts
 
 cloud2_launch:
@@ -609,20 +739,20 @@ cloud2_active:
         jsr random_delay
         sta cloud2_delay
         lda #255
-        sta $d005
+        sta $d007
         rts
 
 cloud2_draw_current:
         lda cloud2_x
-        sta $d004
+        sta $d006
         lda cloud2_y
-        sta $d005
+        sta $d007
         rts
 
 cloud2_draw:
-        sta $d004
+        sta $d006
         lda cloud2_y
-        sta $d005
+        sta $d007
         rts
 
 random_cloud_y:
@@ -642,6 +772,20 @@ random_delay:
         adc rand_tmp
         clc
         adc #20
+        rts
+
+random_bird_y:
+        jsr next_random
+        and #%00111111
+        clc
+        adc #70
+        rts
+
+random_bird_delay:
+        jsr next_random
+        and #%01111111
+        clc
+        adc #30
         rts
 
 next_random:
@@ -760,6 +904,23 @@ sfx_final_win:
         lda #%00100001
         sta $d404
         lda #20
+        sta sound_timer
+        rts
+
+sfx_bird:
+        lda #0
+        sta $d404
+        lda #$f0
+        sta $d400
+        lda #$28
+        sta $d401
+        lda #$11
+        sta $d405
+        lda #$04
+        sta $d406
+        lda #%00100001
+        sta $d404
+        lda #4
         sta sound_timer
         rts
 
@@ -1566,6 +1727,21 @@ cloud2_delay:
 cloud2_tick:
         .byte 0
 
+bird_x:
+        .byte 250
+
+bird_y:
+        .byte 84
+
+bird_delay:
+        .byte 0
+
+bird_tick:
+        .byte 0
+
+bird_chirp_cooldown:
+        .byte 0
+
 rand_tmp:
         .byte 0
 
@@ -2004,5 +2180,57 @@ cloud_sprite_b:
         .byte $01,$ff,$00
         .byte $00,$7c,$00
         .byte $00,$00,$00
+        .byte $00,$00,$00
+        .byte $00
+
+*=$2100
+bird_sprite_a:
+        ; 24x21 multicolor bird silhouette, wings up.
+        .byte $00,$00,$00
+        .byte $00,$00,$00
+        .byte $00,$00,$00
+        .byte $03,$00,$c0
+        .byte $07,$81,$e0
+        .byte $0f,$c3,$f0
+        .byte $1f,$e7,$f8
+        .byte $3f,$ff,$fc
+        .byte $7f,$ff,$fe
+        .byte $3f,$ff,$fc
+        .byte $1f,$ff,$f8
+        .byte $0f,$ff,$f0
+        .byte $07,$ff,$e0
+        .byte $03,$ff,$c0
+        .byte $01,$ff,$80
+        .byte $00,$ff,$00
+        .byte $00,$7e,$00
+        .byte $00,$3c,$00
+        .byte $00,$18,$00
+        .byte $00,$18,$00
+        .byte $00,$00,$00
+        .byte $00
+
+*=$2140
+bird_sprite_b:
+        ; 24x21 multicolor bird silhouette, wings down.
+        .byte $00,$00,$00
+        .byte $00,$00,$00
+        .byte $00,$00,$00
+        .byte $00,$18,$00
+        .byte $00,$3c,$00
+        .byte $01,$ff,$80
+        .byte $03,$ff,$c0
+        .byte $07,$ff,$e0
+        .byte $0f,$ff,$f0
+        .byte $1f,$ff,$f8
+        .byte $3f,$ff,$fc
+        .byte $7f,$ff,$fe
+        .byte $3f,$ff,$fc
+        .byte $1f,$ff,$f8
+        .byte $0f,$ff,$f0
+        .byte $07,$ff,$e0
+        .byte $03,$ff,$c0
+        .byte $01,$e7,$80
+        .byte $00,$c3,$00
+        .byte $00,$81,$00
         .byte $00,$00,$00
         .byte $00
