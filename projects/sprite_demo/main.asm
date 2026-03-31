@@ -102,10 +102,16 @@ main_loop:
         beq state_running
         cmp #1
         beq state_falling
+        cmp #2
+        beq state_game_over
         cmp #3
         beq state_level_complete
         cmp #4
         beq state_final_won
+        jmp main_loop
+
+state_game_over:
+        jsr end_prompt_flow
         jmp main_loop
 
 state_level_complete:
@@ -124,6 +130,7 @@ state_level_complete:
 
 state_final_won:
         jsr animate_final_win
+        jsr end_prompt_flow
         jmp update_sprite
 
 state_running:
@@ -133,6 +140,8 @@ state_running:
         lda game_state
         cmp #3
         beq update_sprite
+        cmp #4
+        beq update_sprite
         jsr check_platform_support
         jmp update_sprite
 
@@ -140,6 +149,9 @@ state_falling:
         lda y_pos
         clc
         adc #3
+        bcc fall_store
+        lda #255
+fall_store:
         sta y_pos
         jsr feet_support
         bcc still_falling
@@ -150,11 +162,15 @@ state_falling:
         jmp update_sprite
 
 still_falling:
+        lda y_pos
         cmp #245
         bcc update_sprite
 
         lda #2
         sta game_state
+        lda #0
+        sta end_timer
+        sta prompt_shown
 
         ; Hide sprite and draw GAME OVER once.
         lda $d015
@@ -648,7 +664,7 @@ win_hit:
         sta win_tick
 
         lda current_level
-        cmp #1
+        cmp #4
         bcs final_win
 
         lda #3
@@ -659,6 +675,9 @@ win_hit:
 final_win:
         lda #4
         sta game_state
+        lda #0
+        sta end_timer
+        sta prompt_shown
         jsr draw_you_won
 no_win:
         rts
@@ -746,6 +765,13 @@ draw_level_complete:
         ldx #0
         lda current_level
         beq draw_lvl1
+        cmp #1
+        beq draw_lvl2
+        cmp #2
+        beq draw_lvl3
+        cmp #3
+        beq draw_lvl4
+        jmp draw_lvl4
 
 draw_lvl2:
 lvl2_loop:
@@ -756,6 +782,26 @@ lvl2_loop:
         sta $d9e6,x
         inx
         bne lvl2_loop
+
+draw_lvl3:
+lvl3_loop:
+        lda level3_complete_text,x
+        beq level_complete_done
+        sta $05e6,x
+        lda #$07
+        sta $d9e6,x
+        inx
+        bne lvl3_loop
+
+draw_lvl4:
+lvl4_loop:
+        lda level4_complete_text,x
+        beq level_complete_done
+        sta $05e6,x
+        lda #$07
+        sta $d9e6,x
+        inx
+        bne lvl4_loop
 
 draw_lvl1:
 lvl1_loop:
@@ -780,6 +826,51 @@ clear_center_loop:
         inx
         cpx #24
         bne clear_center_loop
+        rts
+
+draw_restart_prompt:
+        ldx #0
+restart_prompt_loop:
+        lda restart_prompt_text,x
+        beq restart_prompt_done
+        sta $05d0,x
+        lda #$01
+        sta $d9d0,x
+        inx
+        bne restart_prompt_loop
+restart_prompt_done:
+        rts
+
+end_prompt_flow:
+        inc end_timer
+        lda end_timer
+        cmp #13
+        bcc end_prompt_done
+
+        lda prompt_shown
+        bne check_restart_key
+        jsr draw_restart_prompt
+        lda #1
+        sta prompt_shown
+        rts
+
+check_restart_key:
+        jsr $ff9f       ; SCNKEY
+        jsr $ffe4       ; GETIN
+        beq end_prompt_done
+        jsr restart_game
+        rts
+
+end_prompt_done:
+        rts
+
+restart_game:
+        jsr clear_center_message
+        lda #0
+        sta current_level
+        sta end_timer
+        sta prompt_shown
+        jsr start_level
         rts
 
 draw_world:
@@ -985,6 +1076,11 @@ start_level:
         lda #140
         sta ground_y
 
+        ; Ensure player sprite is visible when a new level starts.
+        lda $d015
+        ora #%00000001
+        sta $d015
+
         lda current_level
         tay
         lda level_width_table,y
@@ -1072,12 +1168,24 @@ you_won_text:
         .byte 32,25,15,21,32,23,15,14,33,32
         .byte 0
 
+restart_prompt_text:
+        .byte 16,18,5,19,19,32,1,32,11,5,25,32,20,15,32,20,18,25,32,1,7,1,9,14
+        .byte 0
+
 level1_complete_text:
         .byte 32,12,5,22,5,12,32,49,32,3,15,13,16,12,5,20,5,32
         .byte 0
 
 level2_complete_text:
         .byte 32,12,5,22,5,12,32,50,32,3,15,13,16,12,5,20,5,32
+        .byte 0
+
+level3_complete_text:
+        .byte 32,12,5,22,5,12,32,51,32,3,15,13,16,12,5,20,5,32
+        .byte 0
+
+level4_complete_text:
+        .byte 32,12,5,22,5,12,32,52,32,3,15,13,16,12,5,20,5,32
         .byte 0
 
 jump_table:
@@ -1123,61 +1231,73 @@ current_level:
 win_timer:
         .byte 0
 
+end_timer:
+        .byte 0
+
+prompt_shown:
+        .byte 0
+
 level_width_table:
-        .byte 96,96
+        .byte 96,96,96,96,96
 
 level_height_table:
-        .byte 5,5
+        .byte 5,5,5,5,5
 
 level_max_scroll_table:
-        .byte 56,56
+        .byte 56,56,56,56,56
 
 level_row_ptr_lo:
         .byte <level1_row0,<level1_row1,<level1_row2,<level1_row3,<level1_row4
         .byte <level2_row0,<level2_row1,<level2_row2,<level2_row3,<level2_row4
+        .byte <level3_row0,<level3_row1,<level3_row2,<level3_row3,<level3_row4
+        .byte <level4_row0,<level4_row1,<level4_row2,<level4_row3,<level4_row4
+        .byte <level5_row0,<level5_row1,<level5_row2,<level5_row3,<level5_row4
 
 level_row_ptr_hi:
         .byte >level1_row0,>level1_row1,>level1_row2,>level1_row3,>level1_row4
         .byte >level2_row0,>level2_row1,>level2_row2,>level2_row3,>level2_row4
+        .byte >level3_row0,>level3_row1,>level3_row2,>level3_row3,>level3_row4
+        .byte >level4_row0,>level4_row1,>level4_row2,>level4_row3,>level4_row4
+        .byte >level5_row0,>level5_row1,>level5_row2,>level5_row3,>level5_row4
 
-; Level 1 (80x5), tile ids: 0 sky, 1 ground, 2 stone, 3 grass, 4 flag
+; Level 1 (96x5), tile ids: 0 sky, 1 ground, 2 stone, 3 grass, 4 flag
 level1_row0:
-        .byte 0,0,0,0,0,0,0,0,0,0,0,3,3,3,0,0
-        .byte 0,0,0,0,0,0,0,0,3,3,3,0,0,0,0,0
-        .byte 0,0,0,0,0,3,3,3,0,0,0,0,0,0,0,0
-        .byte 0,0,0,0,0,0,0,0,0,3,3,3,0,0,0,0
         .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
         .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+        .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+        .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+        .byte 0,0,0,0,0,0,0,0,0,0,3,3,3,3,0,0
+        .byte 0,0,3,3,0,0,3,0,0,0,0,0,0,0,0,0
 
 level1_row1:
         .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
-        .byte 0,0,2,0,0,0,0,0,0,0,0,2,0,0,0,0
-        .byte 0,0,0,0,0,0,0,0,2,0,0,0,0,0,0,0
-        .byte 0,0,0,0,0,0,0,0,0,0,2,0,0,0,0,0
         .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+        .byte 0,0,0,0,0,0,0,0,2,2,2,2,0,0,0,0
         .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+        .byte 0,0,0,0,0,0,0,0,3,3,3,3,3,3,3,3
+        .byte 3,3,3,3,4,3,3,3,0,0,0,0,0,0,0,0
 
 level1_row2:
-        .byte 0,0,0,0,2,0,0,0,0,0,0,0,0,2,0,0
-        .byte 0,0,0,0,0,0,2,0,0,0,0,0,0,0,0,0
-        .byte 0,2,0,0,0,0,0,0,0,0,0,2,0,0,0,0
-        .byte 0,0,0,0,0,0,0,2,0,0,0,0,0,0,0,0
-        .byte 0,0,0,0,0,0,0,0,0,0,4,0,0,0,0,0
         .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+        .byte 0,0,0,0,0,0,0,0,2,2,2,2,0,0,0,0
+        .byte 0,0,0,0,3,3,3,3,0,0,0,0,0,0,0,0
+        .byte 0,0,0,0,0,0,0,3,3,3,0,0,0,3,3,3
+        .byte 0,0,0,0,3,3,3,3,3,3,3,3,3,3,3,3
+        .byte 3,3,3,3,0,0,0,0,0,0,0,0,0,0,0,0
 
 level1_row3:
-        .byte 3,3,3,3,3,3,3,3,3,3,0,0,3,3,3,3
-        .byte 3,3,3,3,3,3,3,0,0,0,3,3,3,3,3,3
-        .byte 3,3,3,3,0,0,3,3,3,3,3,3,3,0,0,3
-        .byte 3,3,3,3,3,3,3,3,0,0,3,3,3,3,3,3
-        .byte 3,3,3,3,3,3,4,3,3,3,3,3,3,3,3,3
+        .byte 3,3,3,3,3,3,3,3,3,3,3,3,0,0,3,3
+        .byte 3,3,3,3,3,3,3,3,3,3,3,3,0,3,3,3
+        .byte 3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3
+        .byte 3,3,3,3,0,0,0,0,0,0,0,0,0,3,3,3
+        .byte 3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3
         .byte 3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3
 
 level1_row4:
-        .byte 1,1,1,1,1,1,1,1,1,1,0,0,1,1,1,1
-        .byte 1,1,1,1,1,1,1,0,0,0,1,1,1,1,1,1
-        .byte 1,1,1,1,0,0,1,1,1,1,1,1,1,0,0,1
-        .byte 1,1,1,1,1,1,1,1,0,0,1,1,1,1,1,1
+        .byte 1,1,1,1,1,1,1,1,1,1,1,1,0,0,1,1
+        .byte 1,1,1,1,1,1,1,1,1,1,1,1,0,1,1,1
+        .byte 1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1
+        .byte 1,1,1,1,0,0,0,0,0,0,0,0,0,1,1,1
         .byte 1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1
         .byte 1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1
 
@@ -1220,6 +1340,129 @@ level2_row4:
         .byte 1,1,1,1,1,0,0,1,1,1,1,1,1,1,0,0
         .byte 1,1,1,1,1,1,1,1,0,0,1,1,1,1,1,1
         .byte 1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1
+        .byte 1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1
+
+; Level 3: rolling hill feel using raised grass shelves.
+level3_row0:
+        .byte 0,0,0,0,0,0,0,0,3,3,3,0,0,0,0,0
+        .byte 0,0,0,3,3,3,0,0,0,0,0,0,0,3,3,3
+        .byte 0,0,0,0,0,0,0,0,3,3,3,0,0,0,0,0
+        .byte 0,0,0,3,3,3,0,0,0,0,0,0,0,3,3,3
+        .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+        .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+
+level3_row1:
+        .byte 0,0,2,0,0,0,0,0,0,0,2,0,0,0,0,0
+        .byte 0,0,0,0,0,0,2,0,0,0,0,0,0,0,0,0
+        .byte 2,0,0,0,0,0,0,0,0,0,2,0,0,0,0,0
+        .byte 0,0,0,0,0,0,2,0,0,0,0,0,0,0,0,0
+        .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+        .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+
+level3_row2:
+        .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+        .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+        .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+        .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+        .byte 0,0,0,0,0,0,0,0,0,0,4,0,0,0,0,0
+        .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+
+level3_row3:
+        .byte 3,3,3,3,3,0,0,3,3,3,3,3,0,0,3,3
+        .byte 3,3,3,3,0,0,3,3,3,3,3,0,0,3,3,3
+        .byte 3,3,3,0,0,3,3,3,3,3,0,0,3,3,3,3
+        .byte 3,3,0,0,3,3,3,3,3,0,0,3,3,3,3,3
+        .byte 3,0,0,3,3,3,3,3,0,0,3,3,3,3,3,3
+        .byte 3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3
+
+level3_row4:
+        .byte 1,1,1,1,1,0,0,1,1,1,1,1,0,0,1,1
+        .byte 1,1,1,1,0,0,1,1,1,1,1,0,0,1,1,1
+        .byte 1,1,1,0,0,1,1,1,1,1,0,0,1,1,1,1
+        .byte 1,1,0,0,1,1,1,1,1,0,0,1,1,1,1,1
+        .byte 1,0,0,1,1,1,1,1,0,0,1,1,1,1,1,1
+        .byte 1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1
+
+; Level 4: more vertical terrain and stepping stones.
+level4_row0:
+        .byte 0,0,0,3,3,3,0,0,0,0,0,3,3,3,0,0
+        .byte 0,0,3,3,3,0,0,0,0,3,3,3,0,0,0,0
+        .byte 3,3,3,0,0,0,0,3,3,3,0,0,0,0,3,3
+        .byte 3,0,0,0,0,3,3,3,0,0,0,0,3,3,3,0
+        .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+        .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+
+level4_row1:
+        .byte 0,0,0,0,0,2,0,0,0,0,0,0,0,2,0,0
+        .byte 0,0,0,0,2,0,0,0,0,0,0,0,2,0,0,0
+        .byte 0,0,0,2,0,0,0,0,0,0,2,0,0,0,0,0
+        .byte 0,0,2,0,0,0,0,0,0,2,0,0,0,0,0,0
+        .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+        .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+
+level4_row2:
+        .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+        .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+        .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+        .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+        .byte 0,0,0,0,0,0,0,0,0,0,4,0,0,0,0,0
+        .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+
+level4_row3:
+        .byte 3,3,3,3,0,0,3,3,3,3,0,0,3,3,3,3
+        .byte 0,0,3,3,3,3,0,0,3,3,3,3,0,0,3,3
+        .byte 3,3,0,0,3,3,3,3,0,0,3,3,3,3,0,0
+        .byte 3,3,3,3,0,0,3,3,3,3,0,0,3,3,3,3
+        .byte 0,0,3,3,3,3,0,0,3,3,3,3,0,0,3,3
+        .byte 3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3
+
+level4_row4:
+        .byte 1,1,1,1,0,0,1,1,1,1,0,0,1,1,1,1
+        .byte 0,0,1,1,1,1,0,0,1,1,1,1,0,0,1,1
+        .byte 1,1,0,0,1,1,1,1,0,0,1,1,1,1,0,0
+        .byte 1,1,1,1,0,0,1,1,1,1,0,0,1,1,1,1
+        .byte 0,0,1,1,1,1,0,0,1,1,1,1,0,0,1,1
+        .byte 1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1
+
+; Level 5: final course with broad hills and a reachable final flag.
+level5_row0:
+        .byte 0,0,3,3,3,0,0,0,0,3,3,3,0,0,0,0
+        .byte 3,3,3,0,0,0,0,3,3,3,0,0,0,0,3,3
+        .byte 3,0,0,0,0,3,3,3,0,0,0,0,3,3,3,0
+        .byte 0,0,0,0,3,3,3,0,0,0,0,3,3,3,0,0
+        .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+        .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+
+level5_row1:
+        .byte 0,0,0,0,2,0,0,0,0,0,2,0,0,0,0,0
+        .byte 0,2,0,0,0,0,0,2,0,0,0,0,0,2,0,0
+        .byte 0,0,0,0,2,0,0,0,0,0,2,0,0,0,0,0
+        .byte 0,2,0,0,0,0,0,2,0,0,0,0,0,2,0,0
+        .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+        .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+
+level5_row2:
+        .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+        .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+        .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+        .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+        .byte 0,0,0,0,0,0,0,0,0,0,4,0,0,0,0,0
+        .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+
+level5_row3:
+        .byte 3,3,3,0,0,3,3,3,0,0,3,3,3,0,0,3
+        .byte 3,3,0,0,3,3,3,0,0,3,3,3,0,0,3,3
+        .byte 3,0,0,3,3,3,0,0,3,3,3,0,0,3,3,3
+        .byte 0,0,3,3,3,0,0,3,3,3,0,0,3,3,3,0
+        .byte 0,3,3,3,0,0,3,3,3,0,0,3,3,3,0,0
+        .byte 3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3
+
+level5_row4:
+        .byte 1,1,1,0,0,1,1,1,0,0,1,1,1,0,0,1
+        .byte 1,1,0,0,1,1,1,0,0,1,1,1,0,0,1,1
+        .byte 1,0,0,1,1,1,0,0,1,1,1,0,0,1,1,1
+        .byte 0,0,1,1,1,0,0,1,1,1,0,0,1,1,1,0
+        .byte 0,1,1,1,0,0,1,1,1,0,0,1,1,1,0,0
         .byte 1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1
 
 *=$2000
