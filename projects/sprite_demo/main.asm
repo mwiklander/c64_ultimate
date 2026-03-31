@@ -160,18 +160,34 @@ state_final_won:
         jmp update_sprite
 
 state_running:
+        jsr update_level_timer
+        lda game_state
+        beq running_continue
+        jmp update_sprite
+running_continue:
         jsr handle_input
         jsr update_jump
+        jsr check_collectibles
         jsr check_win_target
         lda game_state
         cmp #3
-        beq update_sprite
+        bne running_check_final
+        jmp update_sprite
+running_check_final:
         cmp #4
-        beq update_sprite
+        bne running_check_support
+        jmp update_sprite
+running_check_support:
         jsr check_platform_support
         jmp update_sprite
 
 state_falling:
+        jsr update_level_timer
+        lda game_state
+        cmp #1
+        beq falling_continue
+        jmp main_loop
+falling_continue:
         lda y_pos
         clc
         adc #3
@@ -179,6 +195,7 @@ state_falling:
         lda #255
 fall_store:
         sta y_pos
+        jsr check_collectibles
         jsr feet_support
         bcc still_falling
 
@@ -194,15 +211,7 @@ still_falling:
         jmp update_sprite
 
 fell_off_screen:
-        lda lives
-        beq out_of_lives
-        dec lives
-        jsr draw_lives_hud
-        jsr sfx_life_lost
-        lda lives
-        beq out_of_lives
-        jsr clear_center_message
-        jsr start_level
+        jsr lose_life_or_game_over
         jmp main_loop
 
 out_of_lives:
@@ -220,6 +229,18 @@ out_of_lives:
         sta $d015
         jsr draw_game_over
         jmp main_loop
+
+lose_life_or_game_over:
+        lda lives
+        beq out_of_lives
+        dec lives
+        jsr draw_lives_hud
+        jsr sfx_life_lost
+        lda lives
+        beq out_of_lives
+        jsr clear_center_message
+        jsr start_level
+        rts
 
 update_sprite:
         lda x_pos
@@ -1076,6 +1097,20 @@ feet_support:
         jsr is_solid_at
         rts
 
+feet_support_center:
+        ; Stricter support used for standing/run state to avoid edge-sticking.
+        lda x_pos
+        clc
+        adc #12
+        pha
+        lda y_pos
+        clc
+        adc #21
+        tay
+        pla
+        jsr is_solid_at
+        rts
+
 feet_hit:
         sec
         rts
@@ -1158,6 +1193,196 @@ lives_digit:
         sta $0408
         lda #$07
         sta $d808
+        rts
+
+draw_timer_hud:
+        ldx #0
+timer_label_loop:
+        lda timer_label_text,x
+        beq timer_digits
+        sta $0421,x
+        lda #$01
+        sta $d821,x
+        inx
+        bne timer_label_loop
+
+timer_digits:
+        lda timer_seconds
+        ldx #0
+timer_tens_loop:
+        cmp #10
+        bcc timer_tens_done
+        sec
+        sbc #10
+        inx
+        bne timer_tens_loop
+
+timer_tens_done:
+        stx tens_digit
+        sta ones_digit
+        txa
+        clc
+        adc #48
+        sta $0426
+        lda ones_digit
+        clc
+        adc #48
+        sta $0427
+        lda #$07
+        sta $d826
+        sta $d827
+        rts
+
+update_level_timer:
+        inc timer_tick
+        lda timer_tick
+        cmp #50
+        bcc timer_done
+        lda #0
+        sta timer_tick
+        lda timer_seconds
+        beq timer_expired
+        dec timer_seconds
+        jsr draw_timer_hud
+        lda timer_seconds
+        bne timer_done
+
+timer_expired:
+        jsr lose_life_or_game_over
+timer_done:
+        rts
+
+check_collectibles:
+        ; Probe several points on the sprite body so pickups trigger reliably.
+        lda x_pos
+        clc
+        adc #12
+        pha
+        lda y_pos
+        clc
+        adc #12
+        tay
+        pla
+        jsr collect_if_hit
+        bcc collect_probe2
+        jmp collectibles_done
+collect_probe2:
+
+        lda x_pos
+        clc
+        adc #6
+        pha
+        lda y_pos
+        clc
+        adc #12
+        tay
+        pla
+        jsr collect_if_hit
+        bcc collect_probe3
+        jmp collectibles_done
+collect_probe3:
+
+        lda x_pos
+        clc
+        adc #18
+        pha
+        lda y_pos
+        clc
+        adc #12
+        tay
+        pla
+        jsr collect_if_hit
+        bcc collect_probe4
+        jmp collectibles_done
+collect_probe4:
+
+        lda x_pos
+        clc
+        adc #12
+        pha
+        lda y_pos
+        clc
+        adc #20
+        tay
+        pla
+        jsr collect_if_hit
+        bcc collect_probe5
+        jmp collectibles_done
+collect_probe5:
+
+        lda x_pos
+        clc
+        adc #12
+        pha
+        lda y_pos
+        clc
+        adc #6
+        tay
+        pla
+        jsr collect_if_hit
+        bcc collectibles_done
+        rts
+
+collect_if_hit:
+        jsr get_tile_at
+        bcc collect_none
+        cmp #5
+        beq collect_pineapple_now
+        cmp #6
+        beq collect_heart_now
+collect_none:
+        clc
+        rts
+
+collect_pineapple_now:
+        jsr collect_pineapple
+        sec
+        rts
+
+collect_heart_now:
+        jsr collect_heart
+        sec
+        rts
+
+collect_pineapple:
+        jsr clear_collectible_tile
+        ; Add +10 seconds (do not set), clamp to 99.
+        lda timer_seconds
+        clc
+        adc #10
+        bcc pine_store
+        lda #99
+pine_store:
+        cmp #100
+        bcc pine_ok
+        lda #99
+pine_ok:
+        sta timer_seconds
+        jsr draw_timer_hud
+        rts
+
+collect_heart:
+        jsr clear_collectible_tile
+        ; Add +1 life (do not set), clamp to 9.
+        lda lives
+        cmp #9
+        bcs heart_done
+        inc lives
+        jsr draw_lives_hud
+heart_done:
+        rts
+
+clear_collectible_tile:
+        lda hit_row
+        sec
+        sbc #17
+        jsr set_level_row_ptr
+        ldy world_col
+        lda #0
+        sta ($fb),y
+        jsr draw_world
+
+collectibles_done:
         rts
 
 draw_you_won:
@@ -1535,7 +1760,7 @@ draw_tile_row21:
         rts
 
 decode_tile_char_color:
-        ; Tile ids: 0 sky, 1 ground, 2 stone, 3 grass/top, 4 flag
+        ; Tile ids: 0 sky, 1 ground, 2 stone, 3 grass/top, 4 flag, 5 pineapple, 6 heart
         cmp #1
         beq tile_ground
         cmp #2
@@ -1544,6 +1769,10 @@ decode_tile_char_color:
         beq tile_grass
         cmp #4
         beq tile_flag
+        cmp #5
+        beq tile_pineapple
+        cmp #6
+        beq tile_heart
         lda #32
         ldy #$0b
         rts
@@ -1566,6 +1795,16 @@ tile_grass:
 tile_flag:
         lda #47
         ldy #$07
+        rts
+
+tile_pineapple:
+        lda #87         ; Symbol-like glyph (fruit-ish in C64 graphics set)
+        ldy #$07        ; yellow
+        rts
+
+tile_heart:
+        lda #83         ; Heart suit glyph in C64 graphics set
+        ldy #$02        ; red
         rts
 
 get_tile_at:
@@ -1640,12 +1879,15 @@ start_level:
         sta x_pos
         lda #96
         sta y_pos
-        lda #1
+        lda #0
         sta game_state
         lda #0
         sta jump_phase
         sta jump_air_dir
         sta win_tick
+        sta timer_tick
+        lda #60
+        sta timer_seconds
         lda #140
         sta ground_y
 
@@ -1666,7 +1908,25 @@ start_level:
         jsr clear_top_rows
         jsr draw_banner
         jsr draw_world
+        jsr place_player_on_ground
         jsr draw_lives_hud
+        jsr draw_timer_hud
+        rts
+
+place_player_on_ground:
+        lda #96
+        sta y_pos
+spawn_seek_ground:
+        jsr feet_support
+        bcs spawn_found_ground
+        inc y_pos
+        lda y_pos
+        cmp #220
+        bcc spawn_seek_ground
+spawn_found_ground:
+        jsr settle_after_fall
+        lda #0
+        sta game_state
         rts
 
 clear_top_rows:
@@ -1841,8 +2101,24 @@ lives_label_text:
         .byte 12,9,22,5,19,32,32
         .byte 0
 
+timer_label_text:
+        .byte 20,9,13,5,32
+        .byte 0
+
 level1_complete_text:
         .byte 32,12,5,22,5,12,32,49,32,3,15,13,16,12,5,20,5,32
+        .byte 0
+
+timer_seconds:
+        .byte 60
+
+timer_tick:
+        .byte 0
+
+tens_digit:
+        .byte 0
+
+ones_digit:
         .byte 0
 
 level2_complete_text:
@@ -1932,7 +2208,7 @@ level_row_ptr_hi:
         .byte >level4_row0,>level4_row1,>level4_row2,>level4_row3,>level4_row4
         .byte >level5_row0,>level5_row1,>level5_row2,>level5_row3,>level5_row4
 
-; Level 1 (96x5), tile ids: 0 sky, 1 ground, 2 stone, 3 grass, 4 flag
+; Level 1 (96x5), tile ids: 0 sky, 1 ground, 2 stone, 3 grass, 4 flag, 5 pineapple, 6 heart
 level1_row0:
         .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
         .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
@@ -1950,15 +2226,15 @@ level1_row1:
         .byte 3,3,3,3,4,3,3,3,0,0,0,0,0,0,0,0
 
 level1_row2:
-        .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+        .byte 0,0,0,0,0,0,0,0,0,0,5,0,0,0,6,0
         .byte 0,0,0,0,0,0,0,0,2,2,2,2,0,0,0,0
         .byte 0,0,0,0,3,3,3,3,0,0,0,0,0,0,0,0
-        .byte 0,0,0,0,0,0,0,3,3,3,0,0,0,3,3,3
+        .byte 0,0,0,0,0,0,0,3,3,3,0,0,0,0,3,3
         .byte 0,0,0,0,3,3,3,3,3,3,3,3,3,3,3,3
         .byte 3,3,3,3,0,0,0,0,0,0,0,0,0,0,0,0
 
 level1_row3:
-        .byte 3,3,3,3,3,3,3,3,3,3,3,3,0,0,3,3
+        .byte 3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3
         .byte 3,3,3,3,3,3,3,3,3,3,3,3,0,3,3,3
         .byte 3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3
         .byte 3,3,3,3,0,0,0,0,0,0,0,0,0,3,3,3
@@ -1991,7 +2267,7 @@ level2_row1:
         .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
 
 level2_row2:
-        .byte 0,2,0,0,0,0,0,0,0,2,0,0,0,0,0,0
+        .byte 0,2,0,0,5,0,0,0,0,2,0,0,6,0,0,0
         .byte 0,0,0,0,2,0,0,0,0,0,0,0,2,0,0,0
         .byte 0,0,0,0,0,0,0,2,0,0,0,0,0,0,0,0
         .byte 0,2,0,0,0,0,0,0,0,0,2,0,0,0,0,0
