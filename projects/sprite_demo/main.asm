@@ -117,11 +117,6 @@ fill_color:
 main_loop:
         jsr wait_frame
 
-        inc frame_delay
-        lda frame_delay
-        and #%00000011
-        bne main_loop
-
         jsr check_star_cheat
         jsr update_clouds
         jsr update_bird
@@ -247,6 +242,7 @@ frame_a:
 
 handle_input:
         jsr poll_controls
+        jsr update_run_speed
 
         lda #0
         sta dir_pressed
@@ -296,6 +292,9 @@ maybe_air_continue:
         beq done_input
         lda dir_pressed
         bne done_input
+        lda jump_phase
+        and #%00000001
+        bne done_input
         lda jump_air_dir
         beq done_input
         cmp #1
@@ -311,6 +310,54 @@ done_input:
         sta $dc00
         rts
 
+update_run_speed:
+        lda jump_phase
+        beq run_on_ground
+        lda #1
+        sta move_step
+        rts
+
+run_on_ground:
+        lda left_down
+        beq check_run_right
+        lda right_down
+        bne reset_run_speed
+        inc hold_left
+        lda #0
+        sta hold_right
+        lda hold_left
+        cmp #4
+        bcc walk_speed
+        lda #2
+        sta move_step
+        rts
+
+check_run_right:
+        lda right_down
+        beq reset_run_speed
+        inc hold_right
+        lda #0
+        sta hold_left
+        lda hold_right
+        cmp #4
+        bcc walk_speed
+        lda #2
+        sta move_step
+        rts
+
+walk_speed:
+        lda #1
+        sta move_step
+        rts
+
+reset_run_speed:
+        lda #0
+        sta hold_left
+        sta hold_right
+        lda #1
+        sta move_step
+        rts
+
 key_left:
         lda x_pos
         cmp #68
@@ -319,23 +366,24 @@ key_left:
         bcs left_blocked
         lda x_pos
         sec
-        sbc #2
+        sbc move_step
         jmp store_left
 
 try_scroll_left:
         lda scroll_col
         beq hard_left
+        jsr blocked_left_after_scroll
+        bcs left_blocked
         dec scroll_col
         jsr draw_world
-        jsr blocked_left
-        bcc left_ok_after_scroll
-        inc scroll_col
-        jsr draw_world
-        rts
-
-left_ok_after_scroll:
         lda x_pos
         jmp store_left
+
+blocked_left_after_scroll:
+        dec scroll_col
+        jsr blocked_left
+        inc scroll_col
+        rts
 
 hard_left:
         lda x_pos
@@ -344,7 +392,7 @@ hard_left:
         bcs left_blocked
         lda x_pos
         sec
-        sbc #2
+        sbc move_step
 store_left:
         sta x_pos
         lda #1
@@ -362,24 +410,25 @@ key_right:
         bcs right_blocked
         lda x_pos
         clc
-        adc #2
+        adc move_step
         jmp store_right
 
 try_scroll_right:
         lda scroll_col
         cmp max_scroll
         bcs hard_right
+        jsr blocked_right_after_scroll
+        bcs right_blocked
         inc scroll_col
         jsr draw_world
-        jsr blocked_right
-        bcc right_ok_after_scroll
-        dec scroll_col
-        jsr draw_world
-        rts
-
-right_ok_after_scroll:
         lda x_pos
         jmp store_right
+
+blocked_right_after_scroll:
+        inc scroll_col
+        jsr blocked_right
+        dec scroll_col
+        rts
 
 hard_right:
         lda x_pos
@@ -389,7 +438,7 @@ hard_right:
         bcs right_blocked
         lda x_pos
         clc
-        adc #2
+        adc move_step
 store_right:
         sta x_pos
         lda #0
@@ -1692,6 +1741,15 @@ space_down:
         .byte 0
 
 dir_pressed:
+        .byte 0
+
+move_step:
+        .byte 1
+
+hold_left:
+        .byte 0
+
+hold_right:
         .byte 0
 
 jump_air_dir:
