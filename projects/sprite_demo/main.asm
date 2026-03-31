@@ -20,8 +20,12 @@ next    .word 0
         ora #%00000011
         sta $dd00
 
-        ; Fill upper screen with a simple sky texture.
-        lda #46         ; '.'
+        ; Force screen memory to $0400 and character memory to $1000.
+        lda #$14
+        sta $d018
+
+        ; Clear screen RAM to spaces before drawing UI/world elements.
+        lda #32         ; ' '
         ldx #0
 fill_screen:
         sta $0400,x
@@ -42,15 +46,8 @@ fill_color:
         inx
         bne fill_color
 
-        ; Small title text.
-        ldx #0
-text_loop:
-        lda banner,x
-        beq text_done
-        sta $0410,x
-        inx
-        bne text_loop
-text_done:
+         jsr clear_top_rows
+         jsr draw_banner
 
         lda #0
         sta current_level
@@ -60,8 +57,13 @@ text_done:
 
         ; Sprite pointers in screen memory.
         ; $2000/64 = $80 (frame A), $2040/64 = $81 (frame B).
+        ; $2080/64 = $82 (cloud A), $20c0/64 = $83 (cloud B).
         lda #$80
         sta $07f8
+        lda #$82
+        sta $07f9
+        lda #$83
+        sta $07fa
 
         ; Multicolor sprite setup.
         lda $d01c
@@ -76,7 +78,7 @@ text_done:
 
         ; Keep X MSB clear so X stays in 0-255 range.
         lda $d010
-        and #%11111110
+        and #%11111000
         sta $d010
 
         ; Keep sprite in front of character graphics.
@@ -86,8 +88,21 @@ text_done:
 
         ; Enable sprite 0.
         lda $d015
-        ora #%00000001
+        ora #%00000111
         sta $d015
+
+        ; Clouds are white, double width, and double height.
+        lda #$01
+        sta $d028
+        sta $d029
+        lda $d01d
+        ora #%00000110
+        sta $d01d
+        lda $d017
+        ora #%00000110
+        sta $d017
+
+        jsr init_clouds
 
         ; Re-enable IRQ so KERNAL keyboard scan/GETIN works.
         cli
@@ -101,6 +116,7 @@ main_loop:
         bne main_loop
 
         jsr check_star_cheat
+        jsr update_clouds
 
         lda game_state
         beq state_running
@@ -190,6 +206,7 @@ out_of_lives:
         lda #0
         sta end_timer
         sta prompt_shown
+        sta end_wait_release
 
         ; Hide sprite and draw GAME OVER once.
         lda $d015
@@ -481,6 +498,159 @@ no_star_cheat:
         sta $dc00
         rts
 
+init_clouds:
+        lda $d012
+        sta rng_state
+        jsr random_delay
+        sta cloud1_delay
+        jsr random_delay
+        sta cloud2_delay
+        lda #0
+        sta cloud1_x
+        sta cloud2_x
+        sta cloud1_tick
+        sta cloud2_tick
+        lda #90
+        sta cloud1_y
+        lda #112
+        sta cloud2_y
+        lda #255
+        sta $d003
+        sta $d005
+        rts
+
+update_clouds:
+        jsr update_cloud1
+        jsr update_cloud2
+        rts
+
+update_cloud1:
+        lda cloud1_delay
+        beq cloud1_active
+        dec cloud1_delay
+        beq cloud1_launch
+        lda #255
+        sta $d003
+        rts
+
+cloud1_launch:
+        jsr random_cloud_y
+        sta cloud1_y
+        lda #0
+        sta cloud1_x
+
+cloud1_active:
+        inc cloud1_tick
+        lda cloud1_tick
+        and #%00000001
+        bne cloud1_draw_current
+
+        lda cloud1_x
+        clc
+        adc #1
+        sta cloud1_x
+        cmp #250
+        bcc cloud1_draw
+        lda #0
+        sta cloud1_x
+        jsr random_delay
+        sta cloud1_delay
+        lda #255
+        sta $d003
+        rts
+
+cloud1_draw_current:
+        lda cloud1_x
+        sta $d002
+        lda cloud1_y
+        sta $d003
+        rts
+
+cloud1_draw:
+        sta $d002
+        lda cloud1_y
+        sta $d003
+        rts
+
+update_cloud2:
+        lda cloud2_delay
+        beq cloud2_active
+        dec cloud2_delay
+        beq cloud2_launch
+        lda #255
+        sta $d005
+        rts
+
+cloud2_launch:
+        jsr random_cloud_y
+        sta cloud2_y
+        lda #0
+        sta cloud2_x
+
+cloud2_active:
+        inc cloud2_tick
+        lda cloud2_tick
+        and #%00000001
+        bne cloud2_draw_current
+
+        lda cloud2_x
+        clc
+        adc #1
+        sta cloud2_x
+        cmp #250
+        bcc cloud2_draw
+        lda #0
+        sta cloud2_x
+        jsr random_delay
+        sta cloud2_delay
+        lda #255
+        sta $d005
+        rts
+
+cloud2_draw_current:
+        lda cloud2_x
+        sta $d004
+        lda cloud2_y
+        sta $d005
+        rts
+
+cloud2_draw:
+        sta $d004
+        lda cloud2_y
+        sta $d005
+        rts
+
+random_cloud_y:
+        jsr next_random
+        and #%00111111
+        clc
+        adc #50
+        rts
+
+random_delay:
+        jsr next_random
+        and #%01111111
+        sta rand_tmp
+        jsr next_random
+        and #%00111111
+        clc
+        adc rand_tmp
+        clc
+        adc #20
+        rts
+
+next_random:
+        lda rng_state
+        bne rng_step
+        lda #$a5
+rng_step:
+        asl
+        bcc rng_done
+        eor #$1d
+rng_done:
+        sta rng_state
+        rts
+
 update_jump:
         lda jump_phase
         beq jump_done
@@ -732,6 +902,7 @@ final_win:
         lda #0
         sta end_timer
         sta prompt_shown
+        sta end_wait_release
         jsr draw_you_won
 no_win:
         rts
@@ -878,7 +1049,7 @@ clear_center_loop:
         lda #$01
         sta $d9e0,x
         inx
-        cpx #24
+        cpx #32
         bne clear_center_loop
         rts
 
@@ -887,9 +1058,9 @@ draw_restart_prompt:
 restart_prompt_loop:
         lda restart_prompt_text,x
         beq restart_prompt_done
-        sta $05d0,x
+        sta $05e8,x
         lda #$01
-        sta $d9d0,x
+        sta $d9e8,x
         inx
         bne restart_prompt_loop
 restart_prompt_done:
@@ -902,10 +1073,21 @@ end_prompt_flow:
         bcc end_prompt_done
 
         lda prompt_shown
-        bne check_restart_key
+        bne check_restart_release
         jsr draw_restart_prompt
         lda #1
         sta prompt_shown
+        sta end_wait_release
+        rts
+
+check_restart_release:
+        lda end_wait_release
+        beq check_restart_key
+        jsr $ff9f       ; SCNKEY
+        jsr $ffe4       ; GETIN
+        bne end_prompt_done
+        lda #0
+        sta end_wait_release
         rts
 
 check_restart_key:
@@ -936,6 +1118,7 @@ restart_game:
         sta current_level
         sta end_timer
         sta prompt_shown
+        sta end_wait_release
         jsr start_level
         rts
 
@@ -948,7 +1131,7 @@ draw_world_loop:
         sta world_col
 
         ; Clear dynamic world rows to sky.
-        lda #46
+        lda #32
         sta $06a8,x
         sta $06d0,x
         sta $06f8,x
@@ -1037,7 +1220,7 @@ decode_tile_char_color:
         beq tile_grass
         cmp #4
         beq tile_flag
-        lda #46
+        lda #32
         ldy #$0b
         rts
 
@@ -1156,8 +1339,37 @@ start_level:
         lda level_max_scroll_table,y
         sta max_scroll
 
+        jsr clear_top_rows
+        jsr draw_banner
         jsr draw_world
         jsr draw_lives_hud
+        rts
+
+clear_top_rows:
+        ldx #0
+clear_top_loop:
+        lda #32
+        sta $0400,x
+        sta $0428,x
+        lda #$01
+        sta $d800,x
+        sta $d828,x
+        inx
+        cpx #40
+        bne clear_top_loop
+        rts
+
+draw_banner:
+        ldx #0
+draw_banner_loop:
+        lda banner,x
+        beq draw_banner_done
+        sta $0404,x
+        lda #$01
+        sta $d804,x
+        inx
+        bne draw_banner_loop
+draw_banner_done:
         rts
 
 wait_frame:
@@ -1216,6 +1428,36 @@ ground_y:
 lives:
         .byte 5
 
+cloud1_x:
+        .byte 0
+
+cloud1_y:
+        .byte 64
+
+cloud1_delay:
+        .byte 0
+
+cloud1_tick:
+        .byte 0
+
+cloud2_x:
+        .byte 0
+
+cloud2_y:
+        .byte 88
+
+cloud2_delay:
+        .byte 0
+
+cloud2_tick:
+        .byte 0
+
+rand_tmp:
+        .byte 0
+
+rng_state:
+        .byte $5a
+
 win_tick:
         .byte 0
 
@@ -1226,7 +1468,9 @@ flag_col:
         .byte 0
 
 banner:
-        .text " C64 SPRITE DEMO: RETRO RUNNER "
+        ; Screen codes to avoid PETSCII/charset ambiguity.
+        .byte 32,3,54,52,32,19,16,18,9,20,5,32,4,5,13,15
+        .byte 58,32,18,5,20,18,15,32,18,21,14,14,5,18,32
         .byte 0
 
 game_over_text:
@@ -1309,6 +1553,9 @@ end_timer:
         .byte 0
 
 prompt_shown:
+        .byte 0
+
+end_wait_release:
         .byte 0
 
 level_width_table:
@@ -1589,4 +1836,56 @@ sprite_frame_b:
         .byte $00,$81,$00
         .byte $01,$80,$80
         .byte $03,$00,$c0
+        .byte $00
+
+*=$2080
+cloud_sprite_a:
+        ; 24x21 single-color cloud shape A: rounded summer cloud.
+        .byte $00,$00,$00
+        .byte $00,$00,$00
+        .byte $00,$70,$00
+        .byte $01,$fc,$00
+        .byte $07,$ff,$00
+        .byte $1f,$ff,$c0
+        .byte $3f,$ff,$f0
+        .byte $7f,$ff,$fc
+        .byte $ff,$ff,$fe
+        .byte $ff,$ff,$ff
+        .byte $ff,$ff,$ff
+        .byte $7f,$ff,$ff
+        .byte $3f,$ff,$fe
+        .byte $1f,$ff,$fc
+        .byte $0f,$ff,$f0
+        .byte $07,$ff,$c0
+        .byte $03,$ff,$80
+        .byte $00,$ff,$00
+        .byte $00,$38,$00
+        .byte $00,$00,$00
+        .byte $00,$00,$00
+        .byte $00
+
+*=$20c0
+cloud_sprite_b:
+        ; 24x21 single-color cloud shape B: broader and flatter variant.
+        .byte $00,$00,$00
+        .byte $00,$00,$00
+        .byte $00,$1c,$00
+        .byte $00,$7f,$00
+        .byte $01,$ff,$c0
+        .byte $07,$ff,$f0
+        .byte $1f,$ff,$fc
+        .byte $3f,$ff,$fe
+        .byte $7f,$ff,$ff
+        .byte $ff,$ff,$ff
+        .byte $ff,$ff,$ff
+        .byte $ff,$ff,$fe
+        .byte $7f,$ff,$fc
+        .byte $3f,$ff,$f8
+        .byte $1f,$ff,$f0
+        .byte $0f,$ff,$e0
+        .byte $07,$ff,$80
+        .byte $01,$ff,$00
+        .byte $00,$7c,$00
+        .byte $00,$00,$00
+        .byte $00,$00,$00
         .byte $00
