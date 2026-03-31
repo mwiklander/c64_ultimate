@@ -54,6 +54,8 @@ text_done:
 
         lda #0
         sta current_level
+        lda #5
+        sta lives
         jsr start_level
 
         ; Sprite pointers in screen memory.
@@ -98,6 +100,8 @@ main_loop:
         and #%00000011
         bne main_loop
 
+        jsr check_star_cheat
+
         lda game_state
         beq state_running
         cmp #1
@@ -119,8 +123,10 @@ state_level_complete:
         inc win_timer
         lda win_timer
         cmp #70
-        bcc update_sprite
+        bcs level_complete_advance
+        jmp update_sprite
 
+level_complete_advance:
         lda #0
         sta win_timer
         inc current_level
@@ -164,8 +170,21 @@ fall_store:
 still_falling:
         lda y_pos
         cmp #245
-        bcc update_sprite
+        bcs fell_off_screen
+        jmp update_sprite
 
+fell_off_screen:
+        lda lives
+        beq out_of_lives
+        dec lives
+        jsr draw_lives_hud
+        lda lives
+        beq out_of_lives
+        jsr clear_center_message
+        jsr start_level
+        jmp main_loop
+
+out_of_lives:
         lda #2
         sta game_state
         lda #0
@@ -447,6 +466,21 @@ space_done:
         sta $dc00
         rts
 
+check_star_cheat:
+        ; '*' key matrix check without consuming KERNAL key buffer.
+        lda #$bf
+        sta $dc00
+        lda $dc01
+        and #%00000010
+        bne no_star_cheat
+        lda #9
+        sta lives
+        jsr draw_lives_hud
+no_star_cheat:
+        lda #$ff
+        sta $dc00
+        rts
+
 update_jump:
         lda jump_phase
         beq jump_done
@@ -612,6 +646,26 @@ game_over_loop:
         inx
         bne game_over_loop
 game_over_done:
+        rts
+
+draw_lives_hud:
+        ldx #0
+lives_label_loop:
+        lda lives_label_text,x
+        beq lives_digit
+        sta $0401,x
+        lda #$01
+        sta $d801,x
+        inx
+        bne lives_label_loop
+
+lives_digit:
+        lda lives
+        clc
+        adc #48
+        sta $0408
+        lda #$07
+        sta $d808
         rts
 
 draw_you_won:
@@ -858,6 +912,18 @@ check_restart_key:
         jsr $ff9f       ; SCNKEY
         jsr $ffe4       ; GETIN
         beq end_prompt_done
+        cmp #42         ; '*'
+        bne restart_default_lives
+        lda #9
+        sta lives
+        jsr draw_lives_hud
+        jsr restart_game
+        rts
+
+restart_default_lives:
+        lda #5
+        sta lives
+        jsr draw_lives_hud
         jsr restart_game
         rts
 
@@ -1091,6 +1157,7 @@ start_level:
         sta max_scroll
 
         jsr draw_world
+        jsr draw_lives_hud
         rts
 
 wait_frame:
@@ -1114,7 +1181,7 @@ direction:
         .byte 0          ; 0 = right, 1 = left
 
 game_state:
-        .byte 1          ; 0 = running, 1 = falling, 2 = game over
+        .byte 1          ; 0=running, 1=falling, 2=game over, 3=level complete, 4=final won
 
 anim_tick:
         .byte 0
@@ -1146,6 +1213,9 @@ jump_air_dir:
 ground_y:
         .byte 140
 
+lives:
+        .byte 5
+
 win_tick:
         .byte 0
 
@@ -1170,6 +1240,10 @@ you_won_text:
 
 restart_prompt_text:
         .byte 16,18,5,19,19,32,1,32,11,5,25,32,20,15,32,20,18,25,32,1,7,1,9,14
+        .byte 0
+
+lives_label_text:
+        .byte 12,9,22,5,19,32,32
         .byte 0
 
 level1_complete_text:
