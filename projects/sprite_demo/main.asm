@@ -103,6 +103,7 @@ fill_color:
         sta $d017
 
         jsr init_clouds
+        jsr init_sid
 
         ; Re-enable IRQ so KERNAL keyboard scan/GETIN works.
         cli
@@ -117,6 +118,7 @@ main_loop:
 
         jsr check_star_cheat
         jsr update_clouds
+        jsr update_audio
 
         lda game_state
         beq state_running
@@ -194,6 +196,7 @@ fell_off_screen:
         beq out_of_lives
         dec lives
         jsr draw_lives_hud
+        jsr sfx_life_lost
         lda lives
         beq out_of_lives
         jsr clear_center_message
@@ -201,6 +204,7 @@ fell_off_screen:
         jmp main_loop
 
 out_of_lives:
+        jsr sfx_game_over
         lda #2
         sta game_state
         lda #0
@@ -265,6 +269,7 @@ check_jump:
         bne maybe_air_continue
         lda #1
         sta jump_phase
+        jsr sfx_jump
         lda dir_pressed
         bne done_input
         ; If this frame misses X/Z while SPACE starts jump, inherit facing.
@@ -590,7 +595,7 @@ cloud2_launch:
 cloud2_active:
         inc cloud2_tick
         lda cloud2_tick
-        and #%00000001
+        and #%00000011
         bne cloud2_draw_current
 
         lda cloud2_x
@@ -649,6 +654,113 @@ rng_step:
         eor #$1d
 rng_done:
         sta rng_state
+        rts
+
+init_sid:
+        lda #0
+        sta $d404
+        sta $d40b
+        sta $d412
+        lda #$0f
+        sta $d418
+        lda #0
+        sta sound_timer
+        rts
+
+update_audio:
+        lda sound_timer
+        beq audio_done
+        dec sound_timer
+        bne audio_done
+        lda $d404
+        and #%11111110
+        sta $d404
+audio_done:
+        rts
+
+sfx_jump:
+        lda #0
+        sta $d404
+        lda #$80
+        sta $d400
+        lda #$12
+        sta $d401
+        lda #$12
+        sta $d405
+        lda #$08
+        sta $d406
+        lda #%00100001
+        sta $d404
+        lda #3
+        sta sound_timer
+        rts
+
+sfx_life_lost:
+        lda #0
+        sta $d404
+        lda #$c0
+        sta $d400
+        lda #$06
+        sta $d401
+        lda #$28
+        sta $d405
+        lda #$09
+        sta $d406
+        lda #%01000001
+        sta $d404
+        lda #8
+        sta sound_timer
+        rts
+
+sfx_game_over:
+        lda #0
+        sta $d404
+        lda #$30
+        sta $d400
+        lda #$03
+        sta $d401
+        lda #$49
+        sta $d405
+        lda #$0a
+        sta $d406
+        lda #%01000001
+        sta $d404
+        lda #16
+        sta sound_timer
+        rts
+
+sfx_level_clear:
+        lda #0
+        sta $d404
+        lda #$40
+        sta $d400
+        lda #$18
+        sta $d401
+        lda #$24
+        sta $d405
+        lda #$0a
+        sta $d406
+        lda #%00100001
+        sta $d404
+        lda #8
+        sta sound_timer
+        rts
+
+sfx_final_win:
+        lda #0
+        sta $d404
+        lda #$a0
+        sta $d400
+        lda #$22
+        sta $d401
+        lda #$36
+        sta $d405
+        lda #$0b
+        sta $d406
+        lda #%00100001
+        sta $d404
+        lda #20
+        sta sound_timer
         rts
 
 update_jump:
@@ -893,12 +1005,14 @@ win_hit:
 
         lda #3
         sta game_state
+        jsr sfx_level_clear
         jsr draw_level_complete
         rts
 
 final_win:
         lda #4
         sta game_state
+        jsr sfx_final_win
         lda #0
         sta end_timer
         sta prompt_shown
@@ -1453,6 +1567,9 @@ cloud2_tick:
         .byte 0
 
 rand_tmp:
+        .byte 0
+
+sound_timer:
         .byte 0
 
 rng_state:
