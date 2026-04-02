@@ -50,6 +50,8 @@ fill_color:
         sta current_level
         lda #5
         sta lives
+        lda #0
+        sta player_form
 
         ; Sprite pointers in screen memory.
         ; $3800/64 = $e0 (frame A), $3840/64 = $e1 (frame B).
@@ -125,6 +127,7 @@ main_loop:
         cmp #2
         bcs skip_action_poll
         jsr poll_action_keys
+        jsr check_easter_chicken
         jsr check_quit_to_title
         bcc continue_after_quit_check
         jmp frame_done
@@ -268,12 +271,10 @@ update_sprite:
         lda anim_tick
         and #%00000100
         beq frame_a
-        lda #$e1
-        sta $07f8
+        jsr set_player_frame_b
         jmp frame_done
 frame_a:
-        lda #$e0
-        sta $07f8
+        jsr set_player_frame_a
 
 frame_done:
         ; Frame timing marker: green when logic/draw is done.
@@ -606,6 +607,20 @@ poll_action_keys:
         sta action_key
         rts
 
+check_easter_chicken:
+        lda action_key
+        cmp #69         ; 'E'
+        beq set_chicken_mode
+        cmp #101        ; 'e'
+        bne no_chicken_mode
+set_chicken_mode:
+        lda #1
+        sta player_form
+        lda #0
+        sta action_key
+no_chicken_mode:
+        rts
+
 check_quit_to_title:
         lda action_key
         cmp #81         ; 'Q'
@@ -621,6 +636,28 @@ do_quit_to_title:
         rts
 no_quit_to_title:
         clc
+        rts
+
+set_player_frame_a:
+        lda player_form
+        beq player_a_normal
+        lda #$e6
+        sta $07f8
+        rts
+player_a_normal:
+        lda #$e0
+        sta $07f8
+        rts
+
+set_player_frame_b:
+        lda player_form
+        beq player_b_normal
+        lda #$e7
+        sta $07f8
+        rts
+player_b_normal:
+        lda #$e1
+        sta $07f8
         rts
 
 init_clouds:
@@ -2535,8 +2572,7 @@ title_fill_color:
         sta $d000
         lda #120
         sta $d001
-        lda #$e0
-        sta $07f8
+        jsr set_player_frame_a
 
         ; Draw title copy.
         ldx #0
@@ -2583,12 +2619,10 @@ title_wait_loop:
         lda anim_tick
         and #%00001000
         beq title_frame_a
-        lda #$e1
-        sta $07f8
+        jsr set_player_frame_b
         jmp title_poll
 title_frame_a:
-        lda #$e0
-        sta $07f8
+        jsr set_player_frame_a
 
         jsr update_title_bob
         jsr update_title_prompt_blink
@@ -2705,6 +2739,9 @@ jump_air_dir:
 
 action_key:
         .byte 0
+
+player_form:
+        .byte 0          ; 0=Mini, 1=chicken easter egg
 
 ride_mode:
         .byte 0          ; 0=none, 1=cloud1, 2=cloud2, 3=bird
@@ -3096,4 +3133,56 @@ bird_sprite_b:
         .byte $00,$c3,$00
         .byte $00,$81,$00
         .byte $00,$00,$00
+        .byte $00
+
+*=$3980
+chicken_sprite_a:
+        ; 24x21 multicolor chicken, stance A.
+        .byte $00,$00,$00
+        .byte $00,$00,$00
+        .byte $00,$3c,$00
+        .byte $00,$7e,$00
+        .byte $00,$ff,$00
+        .byte $01,$ff,$80
+        .byte $01,$ff,$80
+        .byte $03,$ff,$c0
+        .byte $03,$ff,$c0
+        .byte $03,$ff,$c0
+        .byte $03,$ff,$c0
+        .byte $03,$ff,$c0
+        .byte $01,$ff,$80
+        .byte $01,$ff,$80
+        .byte $00,$ff,$00
+        .byte $00,$7e,$00
+        .byte $00,$3c,$00
+        .byte $00,$66,$00
+        .byte $00,$42,$00
+        .byte $00,$24,$00
+        .byte $00,$24,$00
+        .byte $00
+
+*=$39c0
+chicken_sprite_b:
+        ; 24x21 multicolor chicken, stance B.
+        .byte $00,$00,$00
+        .byte $00,$00,$00
+        .byte $00,$3c,$00
+        .byte $00,$7e,$00
+        .byte $00,$ff,$00
+        .byte $01,$ff,$80
+        .byte $01,$ff,$80
+        .byte $03,$ff,$c0
+        .byte $03,$ff,$c0
+        .byte $03,$ff,$c0
+        .byte $03,$ff,$c0
+        .byte $03,$ff,$c0
+        .byte $01,$ff,$80
+        .byte $01,$ff,$80
+        .byte $00,$ff,$00
+        .byte $00,$7e,$00
+        .byte $00,$3c,$00
+        .byte $00,$66,$00
+        .byte $00,$24,$00
+        .byte $00,$42,$00
+        .byte $00,$24,$00
         .byte $00
