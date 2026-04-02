@@ -12,6 +12,20 @@
         "kind": "build",
         "isDefault": true
       }
+    },
+    {
+      "label": "Open Level Editor",
+      "type": "shell",
+      "command": "/usr/bin/python3",
+      "args": [
+        "tools/level_editor_web.py",
+        "${file}"
+      ],
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated"
+      },
+      "problemMatcher": []
     }
   ]
 }

@@ -1,0 +1,7 @@
+[
+  {
+    "key": "ctrl+cmd+e",
+    "command": "workbench.action.tasks.runTask",
+    "args": "Open Level Editor"
+  }
+]

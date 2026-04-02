@@ -1,5 +1,11 @@
 {
     "chat.tools.terminal.autoApprove": {
-        "./shell/build.sh": true
+        "./shell/build.sh": true,
+        "mkdir": true,
+        "cp": true,
+        "/Users/magnus/git/c64_ultimate/.venv/bin/python": true,
+        "/usr/bin/python3": true,
+        "diff": true,
+        "64tass": true
     }
 }

@@ -46,26 +46,22 @@ fill_color:
         inx
         bne fill_color
 
-         jsr clear_top_rows
-         jsr draw_banner
-
         lda #0
         sta current_level
         lda #5
         sta lives
-        jsr start_level
 
         ; Sprite pointers in screen memory.
-        ; $2000/64 = $80 (frame A), $2040/64 = $81 (frame B).
-        ; $2100/64 = $84 (bird frame A), $2140/64 = $85 (bird frame B).
-        ; $2080/64 = $82 (cloud A), $20c0/64 = $83 (cloud B).
-        lda #$80
+        ; $3800/64 = $e0 (frame A), $3840/64 = $e1 (frame B).
+        ; $3900/64 = $e4 (bird frame A), $3940/64 = $e5 (bird frame B).
+        ; $3880/64 = $e2 (cloud A), $38c0/64 = $e3 (cloud B).
+        lda #$e0
         sta $07f8
-        lda #$84
+        lda #$e4
         sta $07f9
-        lda #$82
+        lda #$e2
         sta $07fa
-        lda #$83
+        lda #$e3
         sta $07fb
 
         ; Multicolor sprite setup.
@@ -107,9 +103,8 @@ fill_color:
         ora #%00001100
         sta $d017
 
-        jsr init_clouds
-        jsr init_bird
         jsr init_sid
+        jsr restart_game
 
         ; Re-enable IRQ so KERNAL keyboard scan/GETIN works.
         cli
@@ -269,11 +264,11 @@ update_sprite:
         lda anim_tick
         and #%00000100
         beq frame_a
-        lda #$81
+        lda #$e1
         sta $07f8
         jmp frame_done
 frame_a:
-        lda #$80
+        lda #$e0
         sta $07f8
 
 frame_done:
@@ -619,9 +614,9 @@ init_clouds:
         sta cloud2_x
         sta cloud1_tick
         sta cloud2_tick
-        lda #140
+        lda #90
         sta cloud1_y
-        lda #156
+        lda #112
         sta cloud2_y
         lda #255
         sta $d005
@@ -638,7 +633,7 @@ init_bird:
         sta bird_delay
         lda #250
         sta bird_x
-        lda #146
+        lda #84
         sta bird_y
         lda #0
         sta bird_tick
@@ -709,12 +704,12 @@ set_bird_frame:
         lda bird_tick
         and #%00000100
         beq bird_frame_a
-        lda #$85
+        lda #$e5
         sta $07f9
         rts
 
 bird_frame_a:
-        lda #$84
+        lda #$e4
         sta $07f9
         rts
 
@@ -881,6 +876,22 @@ ride_scroll_right:
         lda scroll_col
         cmp max_scroll
         bcs ride_done
+
+        ; Match background scroll to host cadence while riding.
+        lda ride_mode
+        cmp #1
+        bne check_cloud2_cadence
+        lda cloud1_tick
+        and #%00000001
+        bne ride_done
+check_cloud2_cadence:
+        lda ride_mode
+        cmp #2
+        bne do_ride_scroll_right
+        lda cloud2_tick
+        and #%00000011
+        bne ride_done
+do_ride_scroll_right:
         inc scroll_col
         jsr draw_world
         lda #208
@@ -894,6 +905,11 @@ ride_scroll_left:
         bcs ride_done
         lda scroll_col
         beq ride_done
+
+        ; Bird advances every other tick, so scroll left at same cadence.
+        lda bird_tick
+        and #%00000001
+        bne ride_done
         dec scroll_col
         jsr draw_world
         lda #68
@@ -1069,9 +1085,9 @@ cloud2_draw:
 
 random_cloud_y:
         jsr next_random
-        and #%00011111
+        and #%00111111
         clc
-        adc #132
+        adc #50
         rts
 
 random_delay:
@@ -1088,9 +1104,9 @@ random_delay:
 
 random_bird_y:
         jsr next_random
-        and #%00011111
+        and #%00111111
         clc
-        adc #134
+        adc #70
         rts
 
 random_bird_delay:
@@ -1117,13 +1133,25 @@ init_sid:
         sta $d404
         sta $d40b
         sta $d412
+        lda #$00
+        sta $d409
+        lda #$08
+        sta $d40a
+        lda #$22
+        sta $d40c
+        lda #$88
+        sta $d40d
         lda #$0f
         sta $d418
         lda #0
         sta sound_timer
+        sta music_mode
+        sta music_tick
+        sta music_step
         rts
 
 update_audio:
+        jsr update_music
         lda sound_timer
         beq audio_done
         dec sound_timer
@@ -1132,6 +1160,110 @@ update_audio:
         and #%11111110
         sta $d404
 audio_done:
+        rts
+
+start_title_music:
+        lda #1
+        sta music_mode
+        lda #0
+        sta music_tick
+        sta music_step
+        sta $d40b
+        lda #$14
+        sta $d40c
+        lda #$a8
+        sta $d40d
+        rts
+
+start_game_music:
+        lda #2
+        sta music_mode
+        lda #0
+        sta music_tick
+        sta music_step
+        sta $d40b
+        lda #$12
+        sta $d40c
+        lda #$a8
+        sta $d40d
+        rts
+
+update_music:
+        lda music_mode
+        bne music_active
+        jmp music_done
+music_active:
+
+        ldx music_step
+        lda music_mode
+        cmp #1
+        beq music_title_mode
+
+music_game_mode:
+        lda gameplay_music_len,x
+        sta rand_tmp
+        inc music_tick
+        lda music_tick
+        cmp rand_tmp
+        bcc music_done
+        lda #0
+        sta music_tick
+
+        lda gameplay_music_hi,x
+        beq music_game_rest
+        lda gameplay_music_lo,x
+        sta $d407
+        lda gameplay_music_hi,x
+        sta $d408
+        lda #%00010001
+        sta $d40b
+        jmp music_advance_game
+
+music_game_rest:
+        lda #0
+        sta $d40b
+
+music_advance_game:
+        inx
+        cpx #GAMEPLAY_MUSIC_LEN
+        bcc music_store_step
+        ldx #0
+        jmp music_store_step
+
+music_title_mode:
+        lda title_music_len,x
+        sta rand_tmp
+        inc music_tick
+        lda music_tick
+        cmp rand_tmp
+        bcc music_done
+        lda #0
+        sta music_tick
+
+        lda title_music_hi,x
+        beq music_title_rest
+        lda title_music_lo,x
+        sta $d407
+        lda title_music_hi,x
+        sta $d408
+        lda #%00010001
+        sta $d40b
+        jmp music_advance_title
+
+music_title_rest:
+        lda #0
+        sta $d40b
+
+music_advance_title:
+        inx
+        cpx #TITLE_MUSIC_LEN
+        bcc music_store_step
+        ldx #0
+
+music_store_step:
+        stx music_step
+
+music_done:
         rts
 
 sfx_jump:
@@ -1246,7 +1378,7 @@ update_jump:
         sta y_pos
 
         ; Head collision while rising: force descent.
-        cpx #7
+        cpx #9
         bcs skip_head_check
         lda x_pos
         clc
@@ -1273,13 +1405,13 @@ update_jump:
         bcc skip_head_check
 
 force_descent:
-        lda #8
+        lda #9
         sta jump_phase
 
 skip_head_check:
         inc jump_phase
         lda jump_phase
-        cmp #13
+        cmp #15
         bcc jump_done
         lda #0
         sta jump_phase
@@ -1617,9 +1749,7 @@ heart_done:
 clear_collectible_tile:
         lda hit_row
         sec
-        sbc #17
-        clc
-        adc #10
+        sbc #7
         jsr set_level_row_ptr
         ldy world_col
         lda #0
@@ -1891,14 +2021,12 @@ check_restart_key:
         bne restart_default_lives
         lda #9
         sta lives
-        jsr draw_lives_hud
         jsr restart_game
         rts
 
 restart_default_lives:
         lda #5
         sta lives
-        jsr draw_lives_hud
         jsr restart_game
         rts
 
@@ -1912,6 +2040,15 @@ restart_game:
         sta end_timer
         sta prompt_shown
         sta end_wait_release
+        jsr draw_title_screen
+        jsr wait_title_start
+        jsr start_game_music
+
+        lda $d015
+        ora #%00001111
+        sta $d015
+        jsr init_clouds
+        jsr init_bird
         jsr start_level
         rts
 
@@ -1925,17 +2062,87 @@ draw_world_loop:
 
         ; Clear dynamic world rows to sky.
         lda #32
+        sta $0518,x
+        sta $0540,x
+        sta $0568,x
+        sta $0590,x
+        sta $05b8,x
+        sta $05e0,x
+        sta $0608,x
+        sta $0630,x
+        sta $0658,x
+        sta $0680,x
         sta $06a8,x
         sta $06d0,x
         sta $06f8,x
         sta $0720,x
         sta $0748,x
         lda #$0b
+        sta $d918,x
+        sta $d940,x
+        sta $d968,x
+        sta $d990,x
+        sta $d9b8,x
+        sta $d9e0,x
+        sta $da08,x
+        sta $da30,x
+        sta $da58,x
+        sta $da80,x
         sta $daa8,x
         sta $dad0,x
         sta $daf8,x
         sta $db20,x
         sta $db48,x
+
+        ; Level row 0 -> screen row 7
+        lda #0
+        jsr get_tile_by_row
+        jsr draw_tile_row7
+
+        ; Level row 1 -> screen row 8
+        lda #1
+        jsr get_tile_by_row
+        jsr draw_tile_row8
+
+        ; Level row 2 -> screen row 9
+        lda #2
+        jsr get_tile_by_row
+        jsr draw_tile_row9
+
+        ; Level row 3 -> screen row 10
+        lda #3
+        jsr get_tile_by_row
+        jsr draw_tile_row10
+
+        ; Level row 4 -> screen row 11
+        lda #4
+        jsr get_tile_by_row
+        jsr draw_tile_row11
+
+        ; Level row 5 -> screen row 12
+        lda #5
+        jsr get_tile_by_row
+        jsr draw_tile_row12
+
+        ; Level row 6 -> screen row 13
+        lda #6
+        jsr get_tile_by_row
+        jsr draw_tile_row13
+
+        ; Level row 7 -> screen row 14
+        lda #7
+        jsr get_tile_by_row
+        jsr draw_tile_row14
+
+        ; Level row 8 -> screen row 15
+        lda #8
+        jsr get_tile_by_row
+        jsr draw_tile_row15
+
+        ; Level row 9 -> screen row 16
+        lda #9
+        jsr get_tile_by_row
+        jsr draw_tile_row16
 
         ; Level row 10 -> screen row 17
         lda #10
@@ -1965,7 +2172,79 @@ draw_world_loop:
 draw_next:
         inx
         cpx #40
-        bne draw_world_loop
+        beq draw_world_done
+        jmp draw_world_loop
+draw_world_done:
+        rts
+
+draw_tile_row7:
+        jsr decode_tile_char_color
+        sta $0518,x
+        tya
+        sta $d918,x
+        rts
+
+draw_tile_row8:
+        jsr decode_tile_char_color
+        sta $0540,x
+        tya
+        sta $d940,x
+        rts
+
+draw_tile_row9:
+        jsr decode_tile_char_color
+        sta $0568,x
+        tya
+        sta $d968,x
+        rts
+
+draw_tile_row10:
+        jsr decode_tile_char_color
+        sta $0590,x
+        tya
+        sta $d990,x
+        rts
+
+draw_tile_row11:
+        jsr decode_tile_char_color
+        sta $05b8,x
+        tya
+        sta $d9b8,x
+        rts
+
+draw_tile_row12:
+        jsr decode_tile_char_color
+        sta $05e0,x
+        tya
+        sta $d9e0,x
+        rts
+
+draw_tile_row13:
+        jsr decode_tile_char_color
+        sta $0608,x
+        tya
+        sta $da08,x
+        rts
+
+draw_tile_row14:
+        jsr decode_tile_char_color
+        sta $0630,x
+        tya
+        sta $da30,x
+        rts
+
+draw_tile_row15:
+        jsr decode_tile_char_color
+        sta $0658,x
+        tya
+        sta $da58,x
+        rts
+
+draw_tile_row16:
+        jsr decode_tile_char_color
+        sta $0680,x
+        tya
+        sta $da80,x
         rts
 
 draw_tile_row17:
@@ -2078,10 +2357,8 @@ get_tile_at:
         lsr
         sta hit_row
         sec
-        sbc #17
+        sbc #7
         bcc no_tile
-        clc
-        adc #10
         cmp level_height
         bcs no_tile
 
@@ -2125,7 +2402,7 @@ start_level:
         sta scroll_col
         lda #112
         sta x_pos
-        lda #96
+        lda #131
         sta y_pos
         lda #0
         sta game_state
@@ -2162,7 +2439,7 @@ start_level:
         rts
 
 place_player_on_ground:
-        lda #96
+        lda #131
         sta y_pos
 spawn_seek_ground:
         jsr feet_support
@@ -2202,6 +2479,143 @@ draw_banner_loop:
         inx
         bne draw_banner_loop
 draw_banner_done:
+        rts
+
+draw_title_screen:
+        lda #0
+        sta anim_tick
+        jsr start_title_music
+
+        ; Black empty backdrop for title presentation.
+        lda #32
+        ldx #0
+title_fill_screen:
+        sta $0400,x
+        sta $0500,x
+        sta $0600,x
+        sta $06e8,x
+        inx
+        bne title_fill_screen
+
+        lda #$00
+        ldx #0
+title_fill_color:
+        sta $d800,x
+        sta $d900,x
+        sta $da00,x
+        sta $dae8,x
+        inx
+        bne title_fill_color
+
+        ; Show only Maja sprite at center-ish position.
+        lda #$01
+        sta $d015
+        lda #56
+        sta $d000
+        lda #120
+        sta $d001
+        lda #$e0
+        sta $07f8
+
+        ; Draw title copy.
+        ldx #0
+title_name_loop:
+        lda title_name_text,x
+        beq title_name_done
+        sta $0574,x
+        lda #$07
+        sta $d974,x
+        inx
+        bne title_name_loop
+title_name_done:
+
+        ldx #0
+title_credit_loop:
+        lda title_credit_text,x
+        beq title_credit_done
+        sta $0610,x
+        lda #$0a
+        sta $da10,x
+        inx
+        bne title_credit_loop
+title_credit_done:
+
+        ldx #0
+title_prompt_loop:
+        lda title_prompt_text,x
+        beq title_prompt_done
+        sta $06d9,x
+        lda #$01
+        sta $dad9,x
+        inx
+        bne title_prompt_loop
+title_prompt_done:
+        rts
+
+wait_title_start:
+title_wait_loop:
+        jsr wait_frame
+        jsr update_audio
+
+        ; Lightweight title sprite animation.
+        inc anim_tick
+        lda anim_tick
+        and #%00001000
+        beq title_frame_a
+        lda #$e1
+        sta $07f8
+        jmp title_poll
+title_frame_a:
+        lda #$e0
+        sta $07f8
+
+        jsr update_title_bob
+        jsr update_title_prompt_blink
+
+title_poll:
+        jsr poll_controls
+        lda space_down
+        beq title_wait_loop
+
+title_release_loop:
+        jsr wait_frame
+        jsr update_audio
+        jsr poll_controls
+        lda space_down
+        bne title_release_loop
+        rts
+
+update_title_bob:
+        lda anim_tick
+        and #%00010000
+        beq title_bob_base
+        lda #121
+        sta $d001
+        rts
+title_bob_base:
+        lda #120
+        sta $d001
+        rts
+
+update_title_prompt_blink:
+        lda anim_tick
+        and #%00100000
+        beq title_prompt_hide
+        lda #$01
+        bne title_prompt_set
+title_prompt_hide:
+        lda #$00
+title_prompt_set:
+        sta title_prompt_color
+        ldx #0
+title_prompt_color_loop:
+        lda title_prompt_text,x
+        beq title_prompt_color_done
+        lda title_prompt_color
+        sta $dad9,x
+        inx
+        bne title_prompt_color_loop
+title_prompt_color_done:
         rts
 
 wait_frame:
@@ -2325,6 +2739,15 @@ rand_tmp:
 sound_timer:
         .byte 0
 
+music_mode:
+        .byte 0          ; 0=off, 1=title, 2=gameplay
+
+music_tick:
+        .byte 0
+
+music_step:
+        .byte 0
+
 rng_state:
         .byte $5a
 
@@ -2341,6 +2764,18 @@ banner:
         ; Screen codes to avoid PETSCII/charset ambiguity.
         .byte 32,3,54,52,32,19,16,18,9,20,5,32,4,5,13,15
         .byte 58,32,18,5,20,18,15,32,18,21,14,14,5,18,32
+        .byte 0
+
+title_name_text:
+        .byte 13,1,10,1,32,3,12,15,21,4,32,18,9,4,5,18
+        .byte 0
+
+title_credit_text:
+        .byte 2,25,32,13,1,7,14,21,19
+        .byte 0
+
+title_prompt_text:
+        .byte 16,18,5,19,19,32,19,16,1,3,5,32,20,15,32,19,20,1,18,20
         .byte 0
 
 game_over_text:
@@ -2380,6 +2815,9 @@ tens_digit:
 ones_digit:
         .byte 0
 
+title_prompt_color:
+        .byte 1
+
 level2_complete_text:
         .byte 32,12,5,22,5,12,32,50,32,3,15,13,16,12,5,20,5,32
         .byte 0
@@ -2393,8 +2831,45 @@ level4_complete_text:
         .byte 0
 
 jump_table:
-        ; 12-frame jump arc as Y offsets from current ground/platform.
-        .byte 0,4,9,15,20,24,20,15,9,4,1,0
+        ; 14-frame jump arc with a little more height and airtime.
+        .byte 0,4,9,15,21,27,30,27,23,18,13,8,4,1
+
+TITLE_MUSIC_LEN = 24
+GAMEPLAY_MUSIC_LEN = 32
+
+title_music_lo:
+        .byte $2c,$43,$56,$6b,$56,$43,$2c,$22
+        .byte $2c,$43,$56,$6b,$56,$43,$2c,$00
+        .byte $22,$2c,$43,$56,$43,$2c,$22,$00
+
+title_music_hi:
+        .byte $1a,$1b,$1c,$1a,$1c,$1b,$1a,$1a
+        .byte $1a,$1b,$1c,$1a,$1c,$1b,$1a,$00
+        .byte $1a,$1a,$1b,$1c,$1b,$1a,$1a,$00
+
+title_music_len:
+        .byte 8,8,8,12,8,8,8,12
+        .byte 8,8,8,12,8,8,8,16
+        .byte 8,8,8,12,8,8,8,16
+
+gameplay_music_lo:
+        ; Gameplay melody: musical phrase (Ode-to-Joy style) in C major.
+        .byte $f3,$f3,$38,$13,$13,$38,$f3,$8f
+        .byte $5e,$5e,$8f,$f3,$f3,$8f,$8f,$00
+        .byte $f3,$f3,$38,$13,$13,$38,$f3,$8f
+        .byte $5e,$5e,$8f,$f3,$8f,$5e,$5e,$00
+
+gameplay_music_hi:
+        .byte $15,$15,$17,$1a,$1a,$17,$15,$13
+        .byte $11,$11,$13,$15,$15,$13,$13,$00
+        .byte $15,$15,$17,$1a,$1a,$17,$15,$13
+        .byte $11,$11,$13,$15,$13,$11,$11,$00
+
+gameplay_music_len:
+        .byte 6,6,6,6,6,6,6,6
+        .byte 6,6,6,6,6,6,12,12
+        .byte 6,6,6,6,6,6,6,6
+        .byte 6,6,6,6,6,6,12,12
 
 sample_x:
         .byte 0
@@ -2444,311 +2919,9 @@ prompt_shown:
 end_wait_release:
         .byte 0
 
-level_width_table:
-        .byte 96,96,96,96,96
+.include "levels/active_levelset.inc"
 
-level_height_table:
-        .byte 15,15,15,15,15
-
-level_max_scroll_table:
-        .byte 56,56,56,56,56
-
-level_row_ptr_lo:
-        ; Logical row 0..9 = new empty space above, row 10..14 = original playfield.
-        .byte <level1_row5,<level1_row6,<level1_row7,<level1_row8,<level1_row9
-        .byte <level1_row10,<level1_row11,<level1_row12,<level1_row13,<level1_row14
-        .byte <level1_row0,<level1_row1,<level1_row2,<level1_row3,<level1_row4
-        .byte <level2_row5,<level2_row6,<level2_row7,<level2_row8,<level2_row9
-        .byte <level2_row10,<level2_row11,<level2_row12,<level2_row13,<level2_row14
-        .byte <level2_row0,<level2_row1,<level2_row2,<level2_row3,<level2_row4
-        .byte <level3_row5,<level3_row6,<level3_row7,<level3_row8,<level3_row9
-        .byte <level3_row10,<level3_row11,<level3_row12,<level3_row13,<level3_row14
-        .byte <level3_row0,<level3_row1,<level3_row2,<level3_row3,<level3_row4
-        .byte <level4_row5,<level4_row6,<level4_row7,<level4_row8,<level4_row9
-        .byte <level4_row10,<level4_row11,<level4_row12,<level4_row13,<level4_row14
-        .byte <level4_row0,<level4_row1,<level4_row2,<level4_row3,<level4_row4
-        .byte <level5_row5,<level5_row6,<level5_row7,<level5_row8,<level5_row9
-        .byte <level5_row10,<level5_row11,<level5_row12,<level5_row13,<level5_row14
-        .byte <level5_row0,<level5_row1,<level5_row2,<level5_row3,<level5_row4
-
-level_row_ptr_hi:
-        .byte >level1_row5,>level1_row6,>level1_row7,>level1_row8,>level1_row9
-        .byte >level1_row10,>level1_row11,>level1_row12,>level1_row13,>level1_row14
-        .byte >level1_row0,>level1_row1,>level1_row2,>level1_row3,>level1_row4
-        .byte >level2_row5,>level2_row6,>level2_row7,>level2_row8,>level2_row9
-        .byte >level2_row10,>level2_row11,>level2_row12,>level2_row13,>level2_row14
-        .byte >level2_row0,>level2_row1,>level2_row2,>level2_row3,>level2_row4
-        .byte >level3_row5,>level3_row6,>level3_row7,>level3_row8,>level3_row9
-        .byte >level3_row10,>level3_row11,>level3_row12,>level3_row13,>level3_row14
-        .byte >level3_row0,>level3_row1,>level3_row2,>level3_row3,>level3_row4
-        .byte >level4_row5,>level4_row6,>level4_row7,>level4_row8,>level4_row9
-        .byte >level4_row10,>level4_row11,>level4_row12,>level4_row13,>level4_row14
-        .byte >level4_row0,>level4_row1,>level4_row2,>level4_row3,>level4_row4
-        .byte >level5_row5,>level5_row6,>level5_row7,>level5_row8,>level5_row9
-        .byte >level5_row10,>level5_row11,>level5_row12,>level5_row13,>level5_row14
-        .byte >level5_row0,>level5_row1,>level5_row2,>level5_row3,>level5_row4
-
-; Level 1 (96x15), tile ids: 0 sky, 1 ground, 2 stone, 3 grass, 4 flag, 5 pineapple, 6 heart
-level1_row0:
-        .byte 0,0,0,0,0,0,0,0,3,0,0,0,0,0,0,0
-        .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
-        .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
-        .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
-        .byte 0,0,0,0,0,0,0,0,0,0,3,3,3,3,0,0
-        .byte 0,0,3,3,0,0,3,0,0,0,0,0,0,0,0,0
-
-level1_row1:
-        .byte 0,0,0,0,0,0,0,3,3,0,0,0,0,0,0,0
-        .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
-        .byte 0,0,0,0,0,0,0,0,2,2,2,2,0,0,0,0
-        .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
-        .byte 0,0,0,0,0,0,0,0,3,3,3,3,3,3,3,3
-        .byte 3,3,3,3,4,3,3,3,0,0,0,0,0,0,0,0
-
-level1_row2:
-        .byte 0,0,0,0,0,0,3,3,3,0,5,0,0,0,6,0
-        .byte 0,0,0,0,0,0,0,0,2,2,2,2,0,0,0,0
-        .byte 0,0,0,0,3,3,3,3,0,0,0,0,0,0,0,0
-        .byte 0,0,0,0,0,0,0,3,3,3,0,0,0,0,3,3
-        .byte 0,0,0,0,3,3,3,3,3,3,3,3,3,3,3,3
-        .byte 3,3,3,3,0,0,0,0,0,0,0,0,0,0,0,0
-
-level1_row3:
-        .byte 3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3
-        .byte 3,3,3,3,3,3,3,3,3,3,3,3,0,3,3,3
-        .byte 3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3
-        .byte 3,3,3,3,0,0,0,0,0,0,0,0,0,3,3,3
-        .byte 3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3
-        .byte 3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3
-
-level1_row4:
-        .byte 1,1,1,1,1,1,1,1,1,1,1,1,0,0,1,1
-        .byte 1,1,1,1,1,1,1,1,1,1,1,1,0,1,1,1
-        .byte 1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1
-        .byte 1,1,1,1,0,0,0,0,0,0,0,0,0,1,1,1
-        .byte 1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1
-        .byte 1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1
-
-level1_row5:   .fill 96,0
-level1_row6:   .fill 96,0
-level1_row7:   .fill 96,0
-level1_row8:   .fill 96,0
-level1_row9:   .fill 96,0
-level1_row10:  .fill 96,0
-level1_row11:  .fill 96,0
-level1_row12:  .fill 96,0
-level1_row13:  .fill 96,0
-level1_row14:  .fill 96,0
-
-; Level 2 adds stepped higher ground and a right-side flag.
-level2_row0:
-        .byte 0,0,0,3,3,0,0,0,0,0,0,0,3,3,3,0
-        .byte 0,0,0,0,0,3,3,3,0,0,0,0,0,0,3,3
-        .byte 3,0,0,0,0,0,0,3,3,3,0,0,0,0,0,0
-        .byte 3,3,3,0,0,0,0,0,0,3,3,3,0,0,0,0
-        .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
-        .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
-
-level2_row1:
-        .byte 0,0,0,0,0,0,2,0,0,0,0,0,0,0,0,0
-        .byte 2,0,0,0,0,0,0,0,2,0,0,0,0,0,0,0
-        .byte 0,0,0,2,0,0,0,0,0,0,2,0,0,0,0,0
-        .byte 0,0,0,0,0,2,0,0,0,0,0,0,0,0,2,0
-        .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
-        .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
-
-level2_row2:
-        .byte 0,2,0,0,5,0,0,0,0,2,0,0,6,0,0,0
-        .byte 0,0,0,0,2,0,0,0,0,0,0,0,2,0,0,0
-        .byte 0,0,0,0,0,0,0,2,0,0,0,0,0,0,0,0
-        .byte 0,2,0,0,0,0,0,0,0,0,2,0,0,0,0,0
-        .byte 0,0,0,0,0,0,0,0,0,0,0,0,4,0,0,0
-        .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
-
-level2_row3:
-        .byte 3,3,3,3,3,3,3,0,0,3,3,3,3,3,3,3
-        .byte 3,0,0,3,3,3,3,3,3,3,0,0,3,3,3,3
-        .byte 3,3,3,3,3,0,0,3,3,3,3,3,3,3,0,0
-        .byte 3,3,3,3,3,3,3,3,0,0,3,3,3,3,3,3
-        .byte 3,3,3,3,3,3,3,3,3,3,3,4,3,3,3,3
-        .byte 3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3
-
-level2_row4:
-        .byte 1,1,1,1,1,1,1,0,0,1,1,1,1,1,1,1
-        .byte 1,0,0,1,1,1,1,1,1,1,0,0,1,1,1,1
-        .byte 1,1,1,1,1,0,0,1,1,1,1,1,1,1,0,0
-        .byte 1,1,1,1,1,1,1,1,0,0,1,1,1,1,1,1
-        .byte 1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1
-        .byte 1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1
-
-level2_row5:   .fill 96,0
-level2_row6:   .fill 96,0
-level2_row7:   .fill 96,0
-level2_row8:   .fill 96,0
-level2_row9:   .fill 96,0
-level2_row10:  .fill 96,0
-level2_row11:  .fill 96,0
-level2_row12:  .fill 96,0
-level2_row13:  .fill 96,0
-level2_row14:  .fill 96,0
-
-; Level 3: rolling hill feel using raised grass shelves.
-level3_row0:
-        .byte 0,0,0,0,0,0,0,0,3,3,3,0,0,0,0,0
-        .byte 0,0,0,3,3,3,0,0,0,0,0,0,0,3,3,3
-        .byte 0,0,0,0,0,0,0,0,3,3,3,0,0,0,0,0
-        .byte 0,0,0,3,3,3,0,0,0,0,0,0,0,3,3,3
-        .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
-        .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
-
-level3_row1:
-        .byte 0,0,2,0,0,0,0,0,0,0,2,0,0,0,0,0
-        .byte 0,0,0,0,0,0,2,0,0,0,0,0,0,0,0,0
-        .byte 2,0,0,0,0,0,0,0,0,0,2,0,0,0,0,0
-        .byte 0,0,0,0,0,0,2,0,0,0,0,0,0,0,0,0
-        .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
-        .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
-
-level3_row2:
-        .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
-        .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
-        .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
-        .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
-        .byte 0,0,0,0,0,0,0,0,0,0,4,0,0,0,0,0
-        .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
-
-level3_row3:
-        .byte 3,3,3,3,3,0,0,3,3,3,3,3,0,0,3,3
-        .byte 3,3,3,3,0,0,3,3,3,3,3,0,0,3,3,3
-        .byte 3,3,3,0,0,3,3,3,3,3,0,0,3,3,3,3
-        .byte 3,3,0,0,3,3,3,3,3,0,0,3,3,3,3,3
-        .byte 3,0,0,3,3,3,3,3,0,0,3,3,3,3,3,3
-        .byte 3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3
-
-level3_row4:
-        .byte 1,1,1,1,1,0,0,1,1,1,1,1,0,0,1,1
-        .byte 1,1,1,1,0,0,1,1,1,1,1,0,0,1,1,1
-        .byte 1,1,1,0,0,1,1,1,1,1,0,0,1,1,1,1
-        .byte 1,1,0,0,1,1,1,1,1,0,0,1,1,1,1,1
-        .byte 1,0,0,1,1,1,1,1,0,0,1,1,1,1,1,1
-        .byte 1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1
-
-level3_row5:   .fill 96,0
-level3_row6:   .fill 96,0
-level3_row7:   .fill 96,0
-level3_row8:   .fill 96,0
-level3_row9:   .fill 96,0
-level3_row10:  .fill 96,0
-level3_row11:  .fill 96,0
-level3_row12:  .fill 96,0
-level3_row13:  .fill 96,0
-level3_row14:  .fill 96,0
-
-; Level 4: more vertical terrain and stepping stones.
-level4_row0:
-        .byte 0,0,0,3,3,3,0,0,0,0,0,3,3,3,0,0
-        .byte 0,0,3,3,3,0,0,0,0,3,3,3,0,0,0,0
-        .byte 3,3,3,0,0,0,0,3,3,3,0,0,0,0,3,3
-        .byte 3,0,0,0,0,3,3,3,0,0,0,0,3,3,3,0
-        .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
-        .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
-
-level4_row1:
-        .byte 0,0,0,0,0,2,0,0,0,0,0,0,0,2,0,0
-        .byte 0,0,0,0,2,0,0,0,0,0,0,0,2,0,0,0
-        .byte 0,0,0,2,0,0,0,0,0,0,2,0,0,0,0,0
-        .byte 0,0,2,0,0,0,0,0,0,2,0,0,0,0,0,0
-        .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
-        .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
-
-level4_row2:
-        .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
-        .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
-        .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
-        .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
-        .byte 0,0,0,0,0,0,0,0,0,0,4,0,0,0,0,0
-        .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
-
-level4_row3:
-        .byte 3,3,3,3,0,0,3,3,3,3,0,0,3,3,3,3
-        .byte 0,0,3,3,3,3,0,0,3,3,3,3,0,0,3,3
-        .byte 3,3,0,0,3,3,3,3,0,0,3,3,3,3,0,0
-        .byte 3,3,3,3,0,0,3,3,3,3,0,0,3,3,3,3
-        .byte 0,0,3,3,3,3,0,0,3,3,3,3,0,0,3,3
-        .byte 3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3
-
-level4_row4:
-        .byte 1,1,1,1,0,0,1,1,1,1,0,0,1,1,1,1
-        .byte 0,0,1,1,1,1,0,0,1,1,1,1,0,0,1,1
-        .byte 1,1,0,0,1,1,1,1,0,0,1,1,1,1,0,0
-        .byte 1,1,1,1,0,0,1,1,1,1,0,0,1,1,1,1
-        .byte 0,0,1,1,1,1,0,0,1,1,1,1,0,0,1,1
-        .byte 1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1
-
-level4_row5:   .fill 96,0
-level4_row6:   .fill 96,0
-level4_row7:   .fill 96,0
-level4_row8:   .fill 96,0
-level4_row9:   .fill 96,0
-level4_row10:  .fill 96,0
-level4_row11:  .fill 96,0
-level4_row12:  .fill 96,0
-level4_row13:  .fill 96,0
-level4_row14:  .fill 96,0
-
-; Level 5: final course with broad hills and a reachable final flag.
-level5_row0:
-        .byte 0,0,3,3,3,0,0,0,0,3,3,3,0,0,0,0
-        .byte 3,3,3,0,0,0,0,3,3,3,0,0,0,0,3,3
-        .byte 3,0,0,0,0,3,3,3,0,0,0,0,3,3,3,0
-        .byte 0,0,0,0,3,3,3,0,0,0,0,3,3,3,0,0
-        .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
-        .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
-
-level5_row1:
-        .byte 0,0,0,0,2,0,0,0,0,0,2,0,0,0,0,0
-        .byte 0,2,0,0,0,0,0,2,0,0,0,0,0,2,0,0
-        .byte 0,0,0,0,2,0,0,0,0,0,2,0,0,0,0,0
-        .byte 0,2,0,0,0,0,0,2,0,0,0,0,0,2,0,0
-        .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
-        .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
-
-level5_row2:
-        .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
-        .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
-        .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
-        .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
-        .byte 0,0,0,0,0,0,0,0,0,0,4,0,0,0,0,0
-        .byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
-
-level5_row3:
-        .byte 3,3,3,0,0,3,3,3,0,0,3,3,3,0,0,3
-        .byte 3,3,0,0,3,3,3,0,0,3,3,3,0,0,3,3
-        .byte 3,0,0,3,3,3,0,0,3,3,3,0,0,3,3,3
-        .byte 0,0,3,3,3,0,0,3,3,3,0,0,3,3,3,0
-        .byte 0,3,3,3,0,0,3,3,3,0,0,3,3,3,0,0
-        .byte 3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3
-
-level5_row4:
-        .byte 1,1,1,0,0,1,1,1,0,0,1,1,1,0,0,1
-        .byte 1,1,0,0,1,1,1,0,0,1,1,1,0,0,1,1
-        .byte 1,0,0,1,1,1,0,0,1,1,1,0,0,1,1,1
-        .byte 0,0,1,1,1,0,0,1,1,1,0,0,1,1,1,0
-        .byte 0,1,1,1,0,0,1,1,1,0,0,1,1,1,0,0
-        .byte 1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1
-
-level5_row5:   .fill 96,0
-level5_row6:   .fill 96,0
-level5_row7:   .fill 96,0
-level5_row8:   .fill 96,0
-level5_row9:   .fill 96,0
-level5_row10:  .fill 96,0
-level5_row11:  .fill 96,0
-level5_row12:  .fill 96,0
-level5_row13:  .fill 96,0
-level5_row14:  .fill 96,0
-
-*=$2000
+*=$3800
 sprite_frame_a:
         ; 24x21 multicolor sprite: retro runner frame A.
         .byte $00,$00,$00
@@ -2774,7 +2947,7 @@ sprite_frame_a:
         .byte $06,$00,$60
         .byte $00
 
-*=$2040
+*=$3840
 sprite_frame_b:
         ; 24x21 multicolor sprite: retro runner frame B.
         .byte $00,$00,$00
@@ -2800,7 +2973,7 @@ sprite_frame_b:
         .byte $03,$00,$c0
         .byte $00
 
-*=$2080
+*=$3880
 cloud_sprite_a:
         ; 24x21 single-color cloud shape A: rounded summer cloud.
         .byte $00,$00,$00
@@ -2826,7 +2999,7 @@ cloud_sprite_a:
         .byte $00,$00,$00
         .byte $00
 
-*=$20c0
+*=$38c0
 cloud_sprite_b:
         ; 24x21 single-color cloud shape B: broader and flatter variant.
         .byte $00,$00,$00
@@ -2852,7 +3025,7 @@ cloud_sprite_b:
         .byte $00,$00,$00
         .byte $00
 
-*=$2100
+*=$3900
 bird_sprite_a:
         ; 24x21 multicolor bird silhouette, wings up.
         .byte $00,$00,$00
@@ -2878,7 +3051,7 @@ bird_sprite_a:
         .byte $00,$00,$00
         .byte $00
 
-*=$2140
+*=$3940
 bird_sprite_b:
         ; 24x21 multicolor bird silhouette, wings down.
         .byte $00,$00,$00
