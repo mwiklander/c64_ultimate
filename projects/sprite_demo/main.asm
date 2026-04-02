@@ -2528,7 +2528,7 @@ title_fill_color:
         inx
         bne title_fill_color
 
-        ; Show only Maja sprite at center-ish position.
+        ; Show only Mini sprite at side position.
         lda #$01
         sta $d015
         lda #56
@@ -2543,9 +2543,9 @@ title_fill_color:
 title_name_loop:
         lda title_name_text,x
         beq title_name_done
-        sta $0574,x
+        sta $0572,x
         lda #$07
-        sta $d974,x
+        sta $d972,x
         inx
         bne title_name_loop
 title_name_done:
@@ -2554,9 +2554,9 @@ title_name_done:
 title_credit_loop:
         lda title_credit_text,x
         beq title_credit_done
-        sta $0610,x
+        sta $0617,x
         lda #$0a
-        sta $da10,x
+        sta $da17,x
         inx
         bne title_credit_loop
 title_credit_done:
@@ -2788,7 +2788,7 @@ banner:
         .byte 0
 
 title_name_text:
-        .byte 13,1,10,1,32,3,12,15,21,4,32,18,9,4,5,18
+        .byte 13,9,14,9,32,20,8,5,32,3,12,15,21,4,32,18,9,4,5,18
         .byte 0
 
 title_credit_text:
