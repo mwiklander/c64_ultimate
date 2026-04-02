@@ -125,6 +125,10 @@ main_loop:
         cmp #2
         bcs skip_action_poll
         jsr poll_action_keys
+        jsr check_quit_to_title
+        bcc continue_after_quit_check
+        jmp frame_done
+continue_after_quit_check:
 skip_action_poll:
         jsr update_ride_mode
 
@@ -600,6 +604,23 @@ poll_action_keys:
         ; One-shot action key polling (C/B/R) via KERNAL GETIN.
         jsr $ffe4
         sta action_key
+        rts
+
+check_quit_to_title:
+        lda action_key
+        cmp #81         ; 'Q'
+        beq do_quit_to_title
+        cmp #113        ; 'q'
+        bne no_quit_to_title
+do_quit_to_title:
+        lda #0
+        sta ride_mode
+        sta action_key
+        jsr restart_game
+        sec
+        rts
+no_quit_to_title:
+        clc
         rts
 
 init_clouds:
