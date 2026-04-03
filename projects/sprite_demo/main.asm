@@ -52,18 +52,20 @@ fill_color:
         sta lives
         lda #0
         sta player_form
+        sta key_collected
+        sta level_requires_key
 
         ; Sprite pointers in screen memory.
-        ; $3800/64 = $e0 (frame A), $3840/64 = $e1 (frame B).
-        ; $3900/64 = $e4 (bird frame A), $3940/64 = $e5 (bird frame B).
-        ; $3880/64 = $e2 (cloud A), $38c0/64 = $e3 (cloud B).
-        lda #$e0
+        ; $3c00/64 = $f0 (frame A), $3c40/64 = $f1 (frame B).
+        ; $3d00/64 = $f4 (bird frame A), $3d40/64 = $f5 (bird frame B).
+        ; $3c80/64 = $f2 (cloud A), $3cc0/64 = $f3 (cloud B).
+        lda #$f0
         sta $07f8
-        lda #$e4
+        lda #$f4
         sta $07f9
-        lda #$e2
+        lda #$f2
         sta $07fa
-        lda #$e3
+        lda #$f3
         sta $07fb
 
         ; Multicolor sprite setup.
@@ -127,6 +129,11 @@ main_loop:
         cmp #2
         bcs skip_action_poll
         jsr poll_action_keys
+        jsr check_level_hotkey
+        bcc action_key_continue
+        jmp frame_done
+action_key_continue:
+        jsr check_toggle_debug_rows
         jsr check_easter_chicken
         jsr check_quit_to_title
         bcc continue_after_quit_check
@@ -607,6 +614,49 @@ poll_action_keys:
         sta action_key
         rts
 
+check_level_hotkey:
+        ; Number keys 1..LEVEL_COUNT jump directly to that level.
+        lda action_key
+        sec
+        sbc #49
+        bcc no_level_hotkey
+        cmp #LEVEL_COUNT
+        bcs no_level_hotkey
+        sta current_level
+        lda #0
+        sta ride_mode
+        sta game_state
+        sta jump_phase
+        sta jump_air_dir
+        jsr clear_center_message
+        jsr start_level
+        lda #0
+        sta action_key
+        sec
+        rts
+no_level_hotkey:
+        clc
+        rts
+
+check_toggle_debug_rows:
+        lda action_key
+        cmp #68         ; 'D'
+        beq toggle_debug_now
+        cmp #100        ; 'd'
+        bne toggle_debug_done
+toggle_debug_now:
+        lda debug_rows_enabled
+        eor #1
+        sta debug_rows_enabled
+        lda #0
+        sta action_key
+        jsr clear_top_rows
+        jsr draw_lives_hud
+        jsr draw_timer_hud
+        jsr draw_world
+toggle_debug_done:
+        rts
+
 check_easter_chicken:
         lda action_key
         cmp #69         ; 'E'
@@ -641,22 +691,22 @@ no_quit_to_title:
 set_player_frame_a:
         lda player_form
         beq player_a_normal
-        lda #$e6
+        lda #$f6
         sta $07f8
         rts
 player_a_normal:
-        lda #$e0
+        lda #$f0
         sta $07f8
         rts
 
 set_player_frame_b:
         lda player_form
         beq player_b_normal
-        lda #$e7
+        lda #$f7
         sta $07f8
         rts
 player_b_normal:
-        lda #$e1
+        lda #$f1
         sta $07f8
         rts
 
@@ -762,12 +812,12 @@ set_bird_frame:
         lda bird_tick
         and #%00000100
         beq bird_frame_a
-        lda #$e5
+        lda #$f5
         sta $07f9
         rts
 
 bird_frame_a:
-        lda #$e4
+        lda #$f4
         sta $07f9
         rts
 
@@ -1608,37 +1658,25 @@ game_over_done:
         rts
 
 draw_lives_hud:
-        ldx #0
-lives_label_loop:
-        lda lives_label_text,x
-        beq lives_digit
-        sta $0401,x
-        lda #$01
-        sta $d801,x
-        inx
-        bne lives_label_loop
+        lda #83
+        sta $0401
+        lda #$02
+        sta $d801
 
-lives_digit:
         lda lives
         clc
         adc #48
-        sta $0408
+        sta $0403
         lda #$07
-        sta $d808
+        sta $d803
         rts
 
 draw_timer_hud:
-        ldx #0
-timer_label_loop:
-        lda timer_label_text,x
-        beq timer_digits
-        sta $0421,x
-        lda #$01
-        sta $d821,x
-        inx
-        bne timer_label_loop
+        lda #87
+        sta $0407
+        lda #$07
+        sta $d807
 
-timer_digits:
         lda timer_seconds
         ldx #0
 timer_tens_loop:
@@ -1655,14 +1693,72 @@ timer_tens_done:
         txa
         clc
         adc #48
-        sta $0426
+        sta $0409
         lda ones_digit
         clc
         adc #48
-        sta $0427
+        sta $040a
         lda #$07
-        sta $d826
-        sta $d827
+        sta $d809
+        sta $d80a
+
+        lda key_collected
+        beq hud_key_empty
+        lda #107
+        sta $040d
+        lda #$07
+        sta $d80d
+        jmp hud_draw_hint
+
+hud_key_empty:
+        lda #32
+        sta $040d
+        lda #$01
+        sta $d80d
+hud_draw_hint:
+        jsr draw_chest_hint_hud
+        rts
+
+draw_chest_hint_hud:
+        ldx #0
+        lda level_requires_key
+        bne chest_hint_pick
+
+chest_hint_clear_loop:
+        lda #32
+        sta $0411,x
+        lda #$01
+        sta $d811,x
+        inx
+        cpx #10
+        bne chest_hint_clear_loop
+        rts
+
+chest_hint_pick:
+        lda key_collected
+        bne chest_hint_open
+
+chest_hint_find_loop:
+        lda find_key_text,x
+        beq chest_hint_done
+        sta $0411,x
+        lda #$07
+        sta $d811,x
+        inx
+        bne chest_hint_find_loop
+
+chest_hint_open:
+        ldx #0
+chest_hint_open_loop:
+        lda open_chest_text,x
+        beq chest_hint_done
+        sta $0411,x
+        lda #$07
+        sta $d811,x
+        inx
+        bne chest_hint_open_loop
+
+chest_hint_done:
         rts
 
 update_level_timer:
@@ -1762,6 +1858,8 @@ collect_if_hit:
         beq collect_pineapple_now
         cmp #6
         beq collect_heart_now
+        cmp #7
+        beq collect_key_now
 collect_none:
         clc
         rts
@@ -1773,6 +1871,11 @@ collect_pineapple_now:
 
 collect_heart_now:
         jsr collect_heart
+        sec
+        rts
+
+collect_key_now:
+        jsr collect_key
         sec
         rts
 
@@ -1804,6 +1907,17 @@ collect_heart:
 heart_done:
         rts
 
+collect_key:
+        lda key_collected
+        bne key_done
+        jsr clear_collectible_tile
+        lda #1
+        sta key_collected
+        jsr clear_center_message
+        jsr draw_timer_hud
+key_done:
+        rts
+
 clear_collectible_tile:
         lda hit_row
         sec
@@ -1831,6 +1945,12 @@ you_won_done:
         rts
 
 check_win_target:
+        lda level_requires_key
+        beq check_win_position
+        lda key_collected
+        beq no_win
+
+check_win_position:
         lda x_pos
         clc
         adc #12
@@ -1845,19 +1965,19 @@ check_win_target:
         adc scroll_col
         sta flag_col
 
-        jsr has_flag_at_col
+        jsr has_chest_at_col
         bcs win_hit
 
         lda flag_col
         beq check_right_col
         dec flag_col
-        jsr has_flag_at_col
+        jsr has_chest_at_col
         bcs win_hit
         inc flag_col
 
 check_right_col:
         inc flag_col
-        jsr has_flag_at_col
+        jsr has_chest_at_col
         bcc no_win
 
 win_hit:
@@ -1888,25 +2008,47 @@ final_win:
 no_win:
         rts
 
-has_flag_at_col:
+has_chest_at_col:
         lda flag_col
         cmp level_width
-        bcs no_flag
+        bcs no_chest
         sta world_col
         ldx #0
 flag_row_loop:
         txa
         jsr get_tile_by_row
         cmp #4
-        beq yes_flag
+        beq yes_chest
         inx
         cpx level_height
         bcc flag_row_loop
-no_flag:
+no_chest:
         clc
         rts
-yes_flag:
+yes_chest:
         sec
+        rts
+
+level_contains_key:
+        ldx #0
+level_key_row_loop:
+        txa
+        jsr set_level_row_ptr
+        ldy #0
+level_key_col_loop:
+        lda ($fb),y
+        cmp #7
+        beq level_has_key_yes
+        iny
+        cpy level_width
+        bcc level_key_col_loop
+        inx
+        cpx level_height
+        bcc level_key_row_loop
+        lda #0
+        rts
+level_has_key_yes:
+        lda #1
         rts
 
 animate_win:
@@ -2233,6 +2375,60 @@ draw_next:
         beq draw_world_done
         jmp draw_world_loop
 draw_world_done:
+        jsr draw_bottom_row_debug
+        rts
+
+draw_bottom_row_debug:
+        lda debug_rows_enabled
+        beq draw_bottom_row_debug_done
+
+        ; Labels: "13:" and "14:" on rows 1 and 2.
+        lda #49
+        sta $0428
+        sta $0450
+        lda #51
+        sta $0429
+        lda #52
+        sta $0451
+        lda #58
+        sta $042a
+        sta $0452
+        lda #$0f
+        sta $d828
+        sta $d829
+        sta $d82a
+        sta $d850
+        sta $d851
+        sta $d852
+
+        ldx #0
+debug_rows_loop:
+        txa
+        clc
+        adc scroll_col
+        sta world_col
+
+        lda #13
+        jsr get_tile_by_row
+        clc
+        adc #48
+        sta $042b,x
+        lda #$0f
+        sta $d82b,x
+
+        lda #14
+        jsr get_tile_by_row
+        clc
+        adc #48
+        sta $0453,x
+        lda #$0f
+        sta $d853,x
+
+        inx
+        cpx #12
+        bne debug_rows_loop
+
+draw_bottom_row_debug_done:
         rts
 
 draw_tile_row7:
@@ -2341,7 +2537,7 @@ draw_tile_row21:
         rts
 
 decode_tile_char_color:
-        ; Tile ids: 0 sky, 1 ground, 2 stone, 3 grass/top, 4 flag, 5 pineapple, 6 heart
+        ; Tile ids: 0 sky, 1 ground, 2 stone, 3 grass/top, 4 chest, 5 pineapple, 6 heart, 7 key
         cmp #1
         beq tile_ground
         cmp #2
@@ -2349,11 +2545,13 @@ decode_tile_char_color:
         cmp #3
         beq tile_grass
         cmp #4
-        beq tile_flag
+        beq tile_chest
         cmp #5
         beq tile_pineapple
         cmp #6
         beq tile_heart
+        cmp #7
+        beq tile_key
         lda #32
         ldy #$0b
         rts
@@ -2373,9 +2571,9 @@ tile_grass:
         ldy #$05
         rts
 
-tile_flag:
-        lda #47
-        ldy #$07
+tile_chest:
+        lda #67
+        ldy #$09
         rts
 
 tile_pineapple:
@@ -2386,6 +2584,11 @@ tile_pineapple:
 tile_heart:
         lda #83         ; Heart suit glyph in C64 graphics set
         ldy #$02        ; red
+        rts
+
+tile_key:
+        lda #107
+        ldy #$07
         rts
 
 get_tile_at:
@@ -2469,6 +2672,8 @@ start_level:
         sta jump_air_dir
         sta win_tick
         sta timer_tick
+        sta key_collected
+        sta level_requires_key
         lda #60
         sta timer_seconds
         lda #140
@@ -2488,8 +2693,10 @@ start_level:
         lda level_max_scroll_table,y
         sta max_scroll
 
+        jsr level_contains_key
+        sta level_requires_key
+
         jsr clear_top_rows
-        jsr draw_banner
         jsr draw_world
         jsr place_player_on_ground
         jsr draw_lives_hud
@@ -2849,6 +3056,14 @@ restart_prompt_text:
         .byte 16,18,5,19,19,32,1,32,11,5,25,32,20,15,32,20,18,25,32,1,7,1,9,14
         .byte 0
 
+find_key_text:
+        .byte 6,9,14,4,32,11,5,25,33
+        .byte 0
+
+open_chest_text:
+        .byte 15,16,5,14,32,3,8,5,19,20
+        .byte 0
+
 lives_label_text:
         .byte 12,9,22,5,19,32,32
         .byte 0
@@ -2965,6 +3180,15 @@ max_scroll:
 current_level:
         .byte 0
 
+key_collected:
+        .byte 0
+
+level_requires_key:
+        .byte 0
+
+debug_rows_enabled:
+        .byte 0
+
 win_timer:
         .byte 0
 
@@ -2979,7 +3203,7 @@ end_wait_release:
 
 .include "levels/active_levelset.inc"
 
-*=$3800
+*=$3c00
 sprite_frame_a:
         ; 24x21 multicolor sprite: retro runner frame A.
         .byte $00,$00,$00
@@ -3005,7 +3229,7 @@ sprite_frame_a:
         .byte $06,$00,$60
         .byte $00
 
-*=$3840
+*=$3c40
 sprite_frame_b:
         ; 24x21 multicolor sprite: retro runner frame B.
         .byte $00,$00,$00
@@ -3031,7 +3255,7 @@ sprite_frame_b:
         .byte $03,$00,$c0
         .byte $00
 
-*=$3880
+*=$3c80
 cloud_sprite_a:
         ; 24x21 single-color cloud shape A: rounded summer cloud.
         .byte $00,$00,$00
@@ -3057,7 +3281,7 @@ cloud_sprite_a:
         .byte $00,$00,$00
         .byte $00
 
-*=$38c0
+*=$3cc0
 cloud_sprite_b:
         ; 24x21 single-color cloud shape B: broader and flatter variant.
         .byte $00,$00,$00
@@ -3083,7 +3307,7 @@ cloud_sprite_b:
         .byte $00,$00,$00
         .byte $00
 
-*=$3900
+*=$3d00
 bird_sprite_a:
         ; 24x21 multicolor bird silhouette, wings up.
         .byte $00,$00,$00
@@ -3109,7 +3333,7 @@ bird_sprite_a:
         .byte $00,$00,$00
         .byte $00
 
-*=$3940
+*=$3d40
 bird_sprite_b:
         ; 24x21 multicolor bird silhouette, wings down.
         .byte $00,$00,$00
@@ -3135,7 +3359,7 @@ bird_sprite_b:
         .byte $00,$00,$00
         .byte $00
 
-*=$3980
+*=$3d80
 chicken_sprite_a:
         ; 24x21 multicolor chicken, stance A.
         .byte $00,$00,$00
@@ -3161,7 +3385,7 @@ chicken_sprite_a:
         .byte $00,$24,$00
         .byte $00
 
-*=$39c0
+*=$3dc0
 chicken_sprite_b:
         ; 24x21 multicolor chicken, stance B.
         .byte $00,$00,$00

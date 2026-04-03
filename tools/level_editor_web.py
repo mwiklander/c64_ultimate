@@ -17,9 +17,10 @@ PALETTE = [
     {"label": "Dirt", "tile": 1, "color": "#8b5a2b"},
     {"label": "Grass", "tile": 3, "color": "#3cb043"},
     {"label": "Stone", "tile": 2, "color": "#8a8a8a"},
+    {"label": "Chest", "tile": 4, "color": "#8b5a2b"},
     {"label": "Pineapple", "tile": 5, "color": "#f4b400"},
     {"label": "Heart", "tile": 6, "color": "#e53935"},
-    {"label": "Flag", "tile": 4, "color": "#ffd54f"},
+    {"label": "Key", "tile": 7, "color": "#f2c94c"},
 ]
 
 
@@ -168,7 +169,7 @@ let currentTile = 1;
 let dragging = false;
 const cellW = 12;
 const cellH = 18;
-const tileColors = {0:'#9ddcff',1:'#8b5a2b',2:'#8a8a8a',3:'#3cb043',4:'#ffd54f',5:'#f4b400',6:'#e53935'};
+const tileColors = {0:'#9ddcff',1:'#8b5a2b',2:'#8a8a8a',3:'#3cb043',4:'#8b5a2b',5:'#f4b400',6:'#e53935',7:'#f2c94c'};
 
 function setStatus(msg){ document.getElementById('status').textContent = msg; }
 

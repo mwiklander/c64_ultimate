@@ -10,9 +10,10 @@ TILE_COLORS = {
     1: "#8b5a2b",  # dirt
     2: "#8a8a8a",  # stone
     3: "#3cb043",  # grass
-    4: "#ffd54f",  # flag
+    4: "#8b5a2b",  # chest
     5: "#f4b400",  # pineapple
     6: "#e53935",  # heart
+    7: "#f2c94c",  # key
 }
 
 PALETTE = [
@@ -20,9 +21,10 @@ PALETTE = [
     ("Dirt", 1),
     ("Grass", 3),
     ("Stone", 2),
+    ("Chest", 4),
     ("Pineapple", 5),
     ("Heart", 6),
-    ("Flag", 4),
+    ("Key", 7),
 ]
 
 ROW_BLOCK_RE = (
