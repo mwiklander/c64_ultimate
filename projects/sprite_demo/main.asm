@@ -24,6 +24,12 @@ next    .word 0
         lda #$14
         sta $d018
 
+        lda #$10
+        sta d016_base
+        lda #0
+        sta fine_scroll
+        jsr apply_fine_scroll
+
         ; Clear screen RAM to spaces before drawing UI/world elements.
         lda #32         ; ' '
         ldx #0
@@ -407,6 +413,72 @@ reset_run_speed:
         sta move_step
         rts
 
+apply_fine_scroll:
+        lda d016_base
+        ora fine_scroll
+        sta $d016
+        rts
+
+camera_scroll_right:
+        lda move_step
+        sta scroll_steps
+cam_scroll_right_loop:
+        jsr camera_scroll_right_1px
+        dec scroll_steps
+        bne cam_scroll_right_loop
+        rts
+
+camera_scroll_right_1px:
+        lda scroll_col
+        cmp max_scroll
+        bcc cam_right_continue
+        lda fine_scroll
+        beq cam_right_done
+cam_right_continue:
+        lda fine_scroll
+        bne cam_right_dec
+        lda #7
+        sta fine_scroll
+        inc scroll_col
+        jsr draw_world_shift_left
+        jmp cam_right_apply
+cam_right_dec:
+        dec fine_scroll
+cam_right_apply:
+        jsr apply_fine_scroll
+cam_right_done:
+        rts
+
+camera_scroll_left:
+        lda move_step
+        sta scroll_steps
+cam_scroll_left_loop:
+        jsr camera_scroll_left_1px
+        dec scroll_steps
+        bne cam_scroll_left_loop
+        rts
+
+camera_scroll_left_1px:
+        lda scroll_col
+        bne cam_left_continue
+        lda fine_scroll
+        beq cam_left_done
+cam_left_continue:
+        lda fine_scroll
+        cmp #7
+        bne cam_left_inc
+        lda #0
+        sta fine_scroll
+        dec scroll_col
+        jsr draw_world_shift_right
+        jmp cam_left_apply
+cam_left_inc:
+        inc fine_scroll
+cam_left_apply:
+        jsr apply_fine_scroll
+cam_left_done:
+        rts
+
 key_left:
         lda x_pos
         cmp #68
@@ -420,11 +492,13 @@ key_left:
 
 try_scroll_left:
         lda scroll_col
+        bne scroll_left_try
+        lda fine_scroll
         beq hard_left
-        jsr blocked_left_after_scroll
+scroll_left_try:
+        jsr blocked_left
         bcs left_blocked
-        dec scroll_col
-        jsr draw_world
+        jsr camera_scroll_left
         lda x_pos
         jmp store_left
 
@@ -465,11 +539,13 @@ key_right:
 try_scroll_right:
         lda scroll_col
         cmp max_scroll
-        bcs hard_right
-        jsr blocked_right_after_scroll
+        bcc scroll_right_try
+        lda fine_scroll
+        beq hard_right
+scroll_right_try:
+        jsr blocked_right
         bcs right_blocked
-        inc scroll_col
-        jsr draw_world
+        jsr camera_scroll_right
         lda x_pos
         jmp store_right
 
@@ -1000,8 +1076,7 @@ check_cloud2_cadence:
         and #%00000011
         bne ride_done
 do_ride_scroll_right:
-        inc scroll_col
-        jsr draw_world
+        jsr camera_scroll_right
         lda #208
         sta x_pos
 ride_done:
@@ -1018,8 +1093,7 @@ ride_scroll_left:
         lda bird_tick
         and #%00000001
         bne ride_done
-        dec scroll_col
-        jsr draw_world
+        jsr camera_scroll_left
         lda #68
         sta x_pos
         rts
@@ -2378,6 +2452,168 @@ draw_world_done:
         jsr draw_bottom_row_debug
         rts
 
+draw_world_shift_left:
+        ldx #0
+shift_left_row_loop:
+        lda char_row_ptr_lo,x
+        sta $fb
+        lda char_row_ptr_hi,x
+        sta $fc
+        lda char_row_ptr_lo,x
+        clc
+        adc #1
+        sta $fd
+        lda char_row_ptr_hi,x
+        adc #0
+        sta $fe
+        ldy #0
+shift_left_char_copy:
+        lda ($fd),y
+        sta ($fb),y
+        iny
+        cpy #39
+        bne shift_left_char_copy
+
+        lda color_row_ptr_lo,x
+        sta $fb
+        lda color_row_ptr_hi,x
+        sta $fc
+        lda color_row_ptr_lo,x
+        clc
+        adc #1
+        sta $fd
+        lda color_row_ptr_hi,x
+        adc #0
+        sta $fe
+        ldy #0
+shift_left_color_copy:
+        lda ($fd),y
+        sta ($fb),y
+        iny
+        cpy #39
+        bne shift_left_color_copy
+
+        inx
+        cpx #15
+        bne shift_left_row_loop
+
+        jsr fill_right_edge_column
+        jsr draw_bottom_row_debug
+        rts
+
+draw_world_shift_right:
+        ldx #0
+shift_right_row_loop:
+        lda char_row_ptr_lo,x
+        sta $fb
+        lda char_row_ptr_hi,x
+        sta $fc
+        lda char_row_ptr_lo,x
+        clc
+        adc #1
+        sta $fd
+        lda char_row_ptr_hi,x
+        adc #0
+        sta $fe
+        ldy #38
+shift_right_char_copy:
+        lda ($fb),y
+        sta ($fd),y
+        dey
+        bpl shift_right_char_copy
+
+        lda color_row_ptr_lo,x
+        sta $fb
+        lda color_row_ptr_hi,x
+        sta $fc
+        lda color_row_ptr_lo,x
+        clc
+        adc #1
+        sta $fd
+        lda color_row_ptr_hi,x
+        adc #0
+        sta $fe
+        ldy #38
+shift_right_color_copy:
+        lda ($fb),y
+        sta ($fd),y
+        dey
+        bpl shift_right_color_copy
+
+        inx
+        cpx #15
+        bne shift_right_row_loop
+
+        jsr fill_left_edge_column
+        jsr draw_bottom_row_debug
+        rts
+
+fill_left_edge_column:
+        lda scroll_col
+        sta world_col
+        ldx #0
+fill_left_edge_loop:
+        txa
+        jsr get_tile_by_row
+        jsr decode_tile_char_color
+        sta draw_char_tmp
+        sty draw_color_tmp
+
+        lda char_row_ptr_lo,x
+        sta $fb
+        lda char_row_ptr_hi,x
+        sta $fc
+        lda draw_char_tmp
+        ldy #0
+        sta ($fb),y
+
+        lda color_row_ptr_lo,x
+        sta $fd
+        lda color_row_ptr_hi,x
+        sta $fe
+        lda draw_color_tmp
+        ldy #0
+        sta ($fd),y
+
+        inx
+        cpx #15
+        bne fill_left_edge_loop
+        rts
+
+fill_right_edge_column:
+        lda scroll_col
+        clc
+        adc #39
+        sta world_col
+        ldx #0
+fill_right_edge_loop:
+        txa
+        jsr get_tile_by_row
+        jsr decode_tile_char_color
+        sta draw_char_tmp
+        sty draw_color_tmp
+
+        lda char_row_ptr_lo,x
+        sta $fb
+        lda char_row_ptr_hi,x
+        sta $fc
+        lda draw_char_tmp
+        ldy #39
+        sta ($fb),y
+
+        lda color_row_ptr_lo,x
+        sta $fd
+        lda color_row_ptr_hi,x
+        sta $fe
+        lda draw_color_tmp
+        ldy #39
+        sta ($fd),y
+
+        inx
+        cpx #15
+        bne fill_right_edge_loop
+        rts
+
 draw_bottom_row_debug:
         lda debug_rows_enabled
         beq draw_bottom_row_debug_done
@@ -2600,6 +2836,9 @@ get_tile_at:
         bcc no_tile
         sec
         sbc #24
+        sec
+        sbc fine_scroll
+        bcc no_tile
         lsr
         lsr
         lsr
@@ -2661,6 +2900,7 @@ set_level_row_ptr:
 start_level:
         lda #0
         sta scroll_col
+        sta fine_scroll
         lda #112
         sta x_pos
         lda #131
@@ -2692,6 +2932,8 @@ start_level:
         sta level_height
         lda level_max_scroll_table,y
         sta max_scroll
+
+        jsr apply_fine_scroll
 
         jsr level_contains_key
         sta level_requires_key
@@ -3188,6 +3430,41 @@ level_requires_key:
 
 debug_rows_enabled:
         .byte 0
+
+fine_scroll:
+        .byte 0
+
+d016_base:
+        .byte $10
+
+scroll_steps:
+        .byte 0
+
+draw_char_tmp:
+        .byte 0
+
+draw_color_tmp:
+        .byte 0
+
+char_row_ptr_lo:
+        .byte <$0518,<$0540,<$0568,<$0590,<$05b8
+        .byte <$05e0,<$0608,<$0630,<$0658,<$0680
+        .byte <$06a8,<$06d0,<$06f8,<$0720,<$0748
+
+char_row_ptr_hi:
+        .byte >$0518,>$0540,>$0568,>$0590,>$05b8
+        .byte >$05e0,>$0608,>$0630,>$0658,>$0680
+        .byte >$06a8,>$06d0,>$06f8,>$0720,>$0748
+
+color_row_ptr_lo:
+        .byte <$d918,<$d940,<$d968,<$d990,<$d9b8
+        .byte <$d9e0,<$da08,<$da30,<$da58,<$da80
+        .byte <$daa8,<$dad0,<$daf8,<$db20,<$db48
+
+color_row_ptr_hi:
+        .byte >$d918,>$d940,>$d968,>$d990,>$d9b8
+        .byte >$d9e0,>$da08,>$da30,>$da58,>$da80
+        .byte >$daa8,>$dad0,>$daf8,>$db20,>$db48
 
 win_timer:
         .byte 0
