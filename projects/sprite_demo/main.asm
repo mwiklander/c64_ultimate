@@ -296,21 +296,11 @@ frame_done:
         jsr update_bird
         jsr update_aux_sprite_msb
         jsr update_audio
-        jsr maybe_draw_shift_line_hud
 
         ; Frame timing marker: green when logic/draw is done.
         lda #$05
         sta $d020
         jmp main_loop
-
-maybe_draw_shift_line_hud:
-        lda shift_line_dirty
-        beq maybe_draw_shift_line_hud_done
-        jsr draw_shift_line_hud
-        lda #0
-        sta shift_line_dirty
-maybe_draw_shift_line_hud_done:
-        rts
 
 handle_input:
         jsr poll_controls
@@ -467,32 +457,15 @@ irq_split:
         beq irq_hud_phase
         cmp #1
         beq irq_world_phase
-        cmp #2
-        beq irq_shift_phase
-        cmp #3
-        bne irq_marker_off_jump
-        jmp irq_marker_on_phase
-irq_marker_off_jump:
-        jmp irq_marker_off_phase
+        jmp irq_shift_phase
 
 irq_world_phase:
         lda world_d016
         sta $d016
 
         lda pending_coarse_shift
-        beq irq_world_marker_check
-        lda #IRQ_LINE_SHIFT
-        sta $d012
-        lda #2
-        sta irq_phase
-        jmp irq_done
-
-irq_world_marker_check:
-        lda shift_marker_active
         beq irq_world_to_hud
-        lda shift_marker_line
-        cmp #IRQ_LINE_WORLD
-        bcc irq_world_to_hud
+        lda #IRQ_LINE_SHIFT
         sta $d012
         lda #2
         sta irq_phase
@@ -508,6 +481,12 @@ irq_world_to_hud:
 irq_hud_phase:
         lda d016_base
         sta $d016
+        lda shift_line_dirty
+        beq irq_hud_line_done
+        jsr draw_shift_line_hud
+        lda #0
+        sta shift_line_dirty
+irq_hud_line_done:
         lda #IRQ_LINE_WORLD
         sta $d012
         lda #1
@@ -524,6 +503,10 @@ irq_shift_left:
         lda #0
         sta fine_scroll
         jsr apply_fine_scroll
+        lda #0
+        sta early_world_commit_done
+        lda d016_base
+        sta $d016
         dec scroll_col
         jsr draw_world_shift_right
         lda #0
@@ -534,6 +517,10 @@ irq_shift_right:
         lda #7
         sta fine_scroll
         jsr apply_fine_scroll
+        lda #0
+        sta early_world_commit_done
+        lda d016_base
+        sta $d016
         inc scroll_col
         jsr draw_world_shift_left
         lda #0
@@ -576,36 +563,16 @@ irq_shift_to_hud:
         jmp irq_done
 
 irq_shift_to_world:
+        ; If the coarse shift finishes after the HUD split has already passed this
+        ; frame, restore HUD scroll immediately so the top rows do not keep the
+        ; world fine-scroll setting until the next frame.
+        lda d016_base
+        sta $d016
         lda #IRQ_LINE_WORLD
         sta $d012
         lda #1
         sta irq_phase
         jmp irq_done
-
-irq_marker_on_phase:
-        lda #$01
-        sta $d020
-        lda #$06
-        sta $d021
-        lda shift_marker_line
-        clc
-        adc #3
-        sta $d012
-        lda #3
-        sta irq_phase
-        jmp irq_done
-
-irq_marker_off_phase:
-        lda #$05
-        sta $d020
-        lda #$00
-        sta $d021
-        lda #0
-        sta shift_marker_active
-        lda #IRQ_LINE_HUD
-        sta $d012
-        lda #0
-        sta irq_phase
 
 irq_done:
         lda #$01
@@ -621,29 +588,41 @@ apply_fine_scroll:
         lda d016_base
         ora fine_scroll
         sta world_d016
-        jsr draw_scroll_state_hud
-        lda irq_phase
-        bne apply_fine_done
-        lda world_d016
-        sta $d016
 apply_fine_done:
         rts
 
-draw_scroll_state_hud:
-        lda #83
-        sta $040f
+draw_shift_line_hud:
+        ; Show row-2 coarse-shift start at HUD cols 28-32 and completion at cols 33-37.
+        lda #50
+        sta $041c
         lda #$07
-        sta $d80f
-        lda fine_scroll
+        sta $d81c
+        lda #58
+        sta $041d
+        lda #$07
+        sta $d81d
+
+        lda row2_marker_line
+        ldx row2_marker_line_hi
+        jsr format_line_digits
+        lda shift_line_hundreds
         clc
         adc #48
-        sta $0410
-        lda #$07
-        sta $d810
-        rts
+        sta $041e
+        lda shift_line_tens
+        clc
+        adc #48
+        sta $041f
+        lda shift_line_ones
+        clc
+        adc #48
+        sta $0420
 
-draw_shift_line_hud:
-        ; Show last coarse-shift completion raster line (0-311) at HUD cols 33-39.
+        lda #$07
+        sta $d81e
+        sta $d81f
+        sta $d820
+
         lda #12
         sta $0421
         lda #$07
@@ -653,45 +632,9 @@ draw_shift_line_hud:
         lda #$07
         sta $d822
 
-        lda shift_marker_line_hi
-        beq shift_line_value_ready
-        lda #2
-        sta shift_line_hundreds
         lda shift_marker_line
-        clc
-        adc #56
-        cmp #100
-        bcc shift_line_tens_prepare
-        sec
-        sbc #100
-        inc shift_line_hundreds
-        jmp shift_line_tens_prepare
-
-shift_line_value_ready:
-        lda shift_marker_line
-        ldx #0
-shift_line_hundreds_loop:
-        cmp #100
-        bcc shift_line_hundreds_done
-        sec
-        sbc #100
-        inx
-        bne shift_line_hundreds_loop
-shift_line_hundreds_done:
-        stx shift_line_hundreds
-
-shift_line_tens_prepare:
-        ldx #0
-shift_line_tens_loop:
-        cmp #10
-        bcc shift_line_tens_done
-        sec
-        sbc #10
-        inx
-        bne shift_line_tens_loop
-shift_line_tens_done:
-        stx shift_line_tens
-        sta shift_line_ones
+        ldx shift_marker_line_hi
+        jsr format_line_digits
 
         lda shift_line_hundreds
         clc
@@ -710,6 +653,64 @@ shift_line_tens_done:
         sta $d823
         sta $d824
         sta $d825
+        rts
+
+maybe_commit_world_scroll:
+        lda early_world_commit_done
+        bne maybe_commit_world_scroll_done
+        lda $d011
+        and #%10000000
+        bne maybe_commit_world_scroll_done
+        lda $d012
+        cmp #IRQ_LINE_SHIFT
+        bcs maybe_commit_world_scroll_done
+        cmp #IRQ_LINE_WORLD
+        bcc maybe_commit_world_scroll_done
+        lda world_d016
+        sta $d016
+        lda #1
+        sta early_world_commit_done
+maybe_commit_world_scroll_done:
+        rts
+
+format_line_digits:
+        cpx #0
+        beq format_line_value_ready
+        ldy #2
+        sty shift_line_hundreds
+        clc
+        adc #56
+        cmp #100
+        bcc format_line_tens_prepare
+        sec
+        sbc #100
+        inc shift_line_hundreds
+        jmp format_line_tens_prepare
+
+format_line_value_ready:
+        ldy #0
+format_line_hundreds_loop:
+        cmp #100
+        bcc format_line_hundreds_done
+        sec
+        sbc #100
+        iny
+        bne format_line_hundreds_loop
+format_line_hundreds_done:
+        sty shift_line_hundreds
+
+format_line_tens_prepare:
+        ldy #0
+format_line_tens_loop:
+        cmp #10
+        bcc format_line_tens_done
+        sec
+        sbc #10
+        iny
+        bne format_line_tens_loop
+format_line_tens_done:
+        sty shift_line_tens
+        sta shift_line_ones
         rts
 
 camera_scroll_right:
@@ -927,33 +928,50 @@ blocked_yes:
 
 poll_controls:
         ; Z = PA1/PB4, X = PA2/PB7, SPACE = PA7/PB4.
-        sei
         lda #0
         sta left_down
         sta right_down
         sta space_down
 
+        sei
         lda #$fd
         sta $dc00
         lda $dc01
+        tax
+        lda #$ff
+        sta $dc00
+        cli
+        txa
         and #%00010000
         bne z_done
         lda #1
         sta left_down
 z_done:
 
+        sei
         lda #$fb
         sta $dc00
         lda $dc01
+        tax
+        lda #$ff
+        sta $dc00
+        cli
+        txa
         and #%10000000
         bne x_done
         lda #1
         sta right_down
 x_done:
 
+        sei
         lda #$7f
         sta $dc00
         lda $dc01
+        tax
+        lda #$ff
+        sta $dc00
+        cli
+        txa
         and #%00010000
         bne space_done
         lda #1
@@ -962,7 +980,6 @@ space_done:
 
         lda #$ff
         sta $dc00
-        cli
         rts
 
 check_star_cheat:
@@ -971,6 +988,11 @@ check_star_cheat:
         lda #$bf
         sta $dc00
         lda $dc01
+        tax
+        lda #$ff
+        sta $dc00
+        cli
+        txa
         and #%00000010
         bne no_star_cheat
         lda #9
@@ -979,21 +1001,23 @@ check_star_cheat:
 no_star_cheat:
         lda #$ff
         sta $dc00
-        cli
         rts
 
 poll_action_keys:
         ; Direct CIA keyboard matrix scan for action keys.
         ; C64 matrix: Row $7F=1,2,Q  Row $FD=3,4,E  Row $FB=5,R,D,C  Row $F7=B
-        sei
         lda #0
         sta action_key
 
         ; Row $7F: '1' (bit0), '2' (bit3), 'Q' (bit6)
+        sei
         lda #$7f
         sta $dc00
         lda $dc01
         tax
+        lda #$ff
+        sta $dc00
+        cli
         txa
         and #%01000000
         bne not_q_key
@@ -1017,10 +1041,14 @@ not_1_key:
 not_2_key:
 
         ; Row $FD: '3' (bit0), '4' (bit3), 'E' (bit6)
+        sei
         lda #$fd
         sta $dc00
         lda $dc01
         tax
+        lda #$ff
+        sta $dc00
+        cli
         txa
         and #%00000001
         bne not_3_key
@@ -1044,10 +1072,14 @@ not_4_key:
 not_e_key:
 
         ; Row $FB: '5' (bit0), 'R' (bit1), 'D' (bit2), 'C' (bit4)
+        sei
         lda #$fb
         sta $dc00
         lda $dc01
         tax
+        lda #$ff
+        sta $dc00
+        cli
         txa
         and #%00000001
         bne not_5_key
@@ -1078,9 +1110,15 @@ not_d_key:
 not_c_key:
 
         ; Row $F7: 'B' (bit4)
+        sei
         lda #$f7
         sta $dc00
         lda $dc01
+        tax
+        lda #$ff
+        sta $dc00
+        cli
+        txa
         and #%00010000
         bne action_key_done
         lda #66
@@ -1089,7 +1127,6 @@ not_c_key:
 action_key_done:
         lda #$ff
         sta $dc00
-        cli
         rts
 
 check_level_hotkey:
@@ -2229,9 +2266,9 @@ draw_game_over:
 game_over_loop:
         lda game_over_text,x
         beq game_over_done
-        sta $05eb,x
+        sta $04d3,x
         lda #$02        ; Red text
-        sta $d9eb,x
+        sta $d8d3,x
         inx
         bne game_over_loop
 game_over_done:
@@ -2558,9 +2595,9 @@ draw_you_won:
 you_won_loop:
         lda you_won_text,x
         beq you_won_done
-        sta $05ec,x
+        sta $04d4,x
         lda #$05        ; Green text
-        sta $d9ec,x
+        sta $d8d4,x
         inx
         bne you_won_loop
 you_won_done:
@@ -2747,9 +2784,9 @@ draw_lvl2:
 lvl2_loop:
         lda level2_complete_text,x
         beq level_complete_done
-        sta $05e6,x
+        sta $04ce,x
         lda #$07
-        sta $d9e6,x
+        sta $d8ce,x
         inx
         bne lvl2_loop
 
@@ -2757,9 +2794,9 @@ draw_lvl3:
 lvl3_loop:
         lda level3_complete_text,x
         beq level_complete_done
-        sta $05e6,x
+        sta $04ce,x
         lda #$07
-        sta $d9e6,x
+        sta $d8ce,x
         inx
         bne lvl3_loop
 
@@ -2767,9 +2804,9 @@ draw_lvl4:
 lvl4_loop:
         lda level4_complete_text,x
         beq level_complete_done
-        sta $05e6,x
+        sta $04ce,x
         lda #$07
-        sta $d9e6,x
+        sta $d8ce,x
         inx
         bne lvl4_loop
 
@@ -2777,9 +2814,9 @@ draw_lvl1:
 lvl1_loop:
         lda level1_complete_text,x
         beq level_complete_done
-        sta $05e6,x
+        sta $04ce,x
         lda #$07
-        sta $d9e6,x
+        sta $d8ce,x
         inx
         bne lvl1_loop
 
@@ -2790,9 +2827,9 @@ clear_center_message:
         ldx #0
 clear_center_loop:
         lda #32
-        sta $05e0,x
+        sta $04c8,x
         lda #$01
-        sta $d9e0,x
+        sta $d8c8,x
         inx
         cpx #32
         bne clear_center_loop
@@ -2803,9 +2840,9 @@ draw_restart_prompt:
 restart_prompt_loop:
         lda restart_prompt_text,x
         beq restart_prompt_done
-        sta $05e8,x
+        sta $04d0,x
         lda #$01
-        sta $d9e8,x
+        sta $d8d0,x
         inx
         bne restart_prompt_loop
 restart_prompt_done:
@@ -3020,10 +3057,36 @@ draw_world_shift_right:
 shift_row_save:
         .byte 0
 
+fill_left_edge_row0:
+        lda scroll_col
+        sta world_col
+        lda #0
+        jsr get_tile_by_row
+        ldx #0
+        jsr decode_tile_char_color
+        sta $0518
+        tya
+        sta $d918
+        rts
+
+fill_right_edge_row0:
+        lda scroll_col
+        clc
+        adc #39
+        sta world_col
+        lda #0
+        jsr get_tile_by_row
+        ldx #0
+        jsr decode_tile_char_color
+        sta $053f
+        tya
+        sta $d93f
+        rts
+
 fill_left_edge_column:
         lda scroll_col
         sta world_col
-        ldx #14
+        ldx #1
 fill_left_edge_row_loop:
         stx shift_row_save
         txa
@@ -3048,8 +3111,9 @@ fill_left_edge_row_loop:
         lda draw_color_tmp
         sta ($fd),y
 
-        dex
-        bpl fill_left_edge_row_loop
+        inx
+        cpx #15
+        bcc fill_left_edge_row_loop
         rts
 
 fill_right_edge_column:
@@ -3057,7 +3121,7 @@ fill_right_edge_column:
         clc
         adc #39
         sta world_col
-        ldx #14
+        ldx #1
 fill_right_edge_row_loop:
         stx shift_row_save
         txa
@@ -3082,8 +3146,9 @@ fill_right_edge_row_loop:
         lda draw_color_tmp
         sta ($fd),y
 
-        dex
-        bpl fill_right_edge_row_loop
+        inx
+        cpx #15
+        bcc fill_right_edge_row_loop
         rts
 
 draw_bottom_row_debug:
@@ -3827,8 +3892,8 @@ jump_table:
 TITLE_MUSIC_LEN = 24
 GAMEPLAY_MUSIC_LEN = 32
 IRQ_LINE_HUD = 16
-IRQ_LINE_WORLD = 100
-IRQ_LINE_SHIFT = 200
+IRQ_LINE_WORLD = 80
+IRQ_LINE_SHIFT = 184
 
 title_music_lo:
         .byte $2c,$43,$56,$6b,$56,$43,$2c,$22
@@ -3933,9 +3998,6 @@ shift_marker_line:
 shift_marker_line_hi:
         .byte 0
 
-shift_marker_active:
-        .byte 0
-
 shift_line_hundreds:
         .byte 0
 
@@ -3946,6 +4008,15 @@ shift_line_ones:
         .byte 0
 
 shift_line_dirty:
+        .byte 0
+
+row2_marker_line:
+        .byte IRQ_LINE_SHIFT
+
+row2_marker_line_hi:
+        .byte 0
+
+early_world_commit_done:
         .byte 0
 
 bird_x_msb:
@@ -4378,70 +4449,119 @@ shift_right_39 .macro base
         sta \base+1
 .endm
 
+capture_row2_marker .macro
+        lda $d011
+        and #%10000000
+        beq row2_marker_line_low\@
+        lda #1
+        sta row2_marker_line_hi
+        jmp row2_marker_store_line\@
+row2_marker_line_low\@:
+        lda #0
+        sta row2_marker_line_hi
+row2_marker_store_line\@:
+        lda $d012
+        sta row2_marker_line
+.endm
+
 unrolled_shift_left:
         ; Top to bottom: row 0..14, char then color per row.
         shift_left_39 $0518
         shift_left_39 $d918
+        jsr fill_right_edge_row0
+        jsr maybe_commit_world_scroll
         shift_left_39 $0540
         shift_left_39 $d940
+        jsr maybe_commit_world_scroll
+        capture_row2_marker
         shift_left_39 $0568
         shift_left_39 $d968
+        jsr maybe_commit_world_scroll
         shift_left_39 $0590
         shift_left_39 $d990
+        jsr maybe_commit_world_scroll
         shift_left_39 $05b8
         shift_left_39 $d9b8
+        jsr maybe_commit_world_scroll
         shift_left_39 $05e0
         shift_left_39 $d9e0
+        jsr maybe_commit_world_scroll
         shift_left_39 $0608
         shift_left_39 $da08
+        jsr maybe_commit_world_scroll
         shift_left_39 $0630
         shift_left_39 $da30
+        jsr maybe_commit_world_scroll
         shift_left_39 $0658
         shift_left_39 $da58
+        jsr maybe_commit_world_scroll
         shift_left_39 $0680
         shift_left_39 $da80
+        jsr maybe_commit_world_scroll
         shift_left_39 $06a8
         shift_left_39 $daa8
+        jsr maybe_commit_world_scroll
         shift_left_39 $06d0
         shift_left_39 $dad0
+        jsr maybe_commit_world_scroll
         shift_left_39 $06f8
         shift_left_39 $daf8
+        jsr maybe_commit_world_scroll
         shift_left_39 $0720
         shift_left_39 $db20
+        jsr maybe_commit_world_scroll
         shift_left_39 $0748
         shift_left_39 $db48
+        jsr maybe_commit_world_scroll
         rts
 
 unrolled_shift_right:
         ; Top to bottom: row 0..14, char then color per row.
         shift_right_39 $0518
         shift_right_39 $d918
+        jsr fill_left_edge_row0
+        jsr maybe_commit_world_scroll
         shift_right_39 $0540
         shift_right_39 $d940
+        jsr maybe_commit_world_scroll
+        capture_row2_marker
         shift_right_39 $0568
         shift_right_39 $d968
+        jsr maybe_commit_world_scroll
         shift_right_39 $0590
         shift_right_39 $d990
+        jsr maybe_commit_world_scroll
         shift_right_39 $05b8
         shift_right_39 $d9b8
+        jsr maybe_commit_world_scroll
         shift_right_39 $05e0
         shift_right_39 $d9e0
+        jsr maybe_commit_world_scroll
         shift_right_39 $0608
         shift_right_39 $da08
+        jsr maybe_commit_world_scroll
         shift_right_39 $0630
         shift_right_39 $da30
+        jsr maybe_commit_world_scroll
         shift_right_39 $0658
         shift_right_39 $da58
+        jsr maybe_commit_world_scroll
         shift_right_39 $0680
         shift_right_39 $da80
+        jsr maybe_commit_world_scroll
         shift_right_39 $06a8
         shift_right_39 $daa8
+        jsr maybe_commit_world_scroll
         shift_right_39 $06d0
         shift_right_39 $dad0
+        jsr maybe_commit_world_scroll
         shift_right_39 $06f8
         shift_right_39 $daf8
+        jsr maybe_commit_world_scroll
         shift_right_39 $0720
         shift_right_39 $db20
+        jsr maybe_commit_world_scroll
         shift_right_39 $0748
         shift_right_39 $db48
+        jsr maybe_commit_world_scroll
         rts
