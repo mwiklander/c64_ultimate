@@ -29,6 +29,8 @@ next    .word 0
         lda #0
         sta fine_scroll
         jsr apply_fine_scroll
+        lda d016_base
+        sta $d016
 
         ; Clear screen RAM to spaces before drawing UI/world elements.
         lda #32         ; ' '
@@ -115,6 +117,7 @@ fill_color:
 
         jsr init_sid
         jsr restart_game
+        jsr init_raster_split
 
         ; Re-enable IRQ so KERNAL keyboard scan/GETIN works.
         cli
@@ -127,9 +130,6 @@ main_loop:
         sta $d020
 
         jsr check_star_cheat
-        jsr update_clouds
-        jsr update_bird
-        jsr update_audio
 
         lda game_state
         cmp #2
@@ -290,10 +290,27 @@ frame_a:
         jsr set_player_frame_a
 
 frame_done:
+        ; Run cloud/bird/audio updates after movement/scroll so coarse-column shifts
+        ; are completed earlier in the frame and avoid boundary wrap flicker.
+        jsr update_clouds
+        jsr update_bird
+        jsr update_aux_sprite_msb
+        jsr update_audio
+        jsr maybe_draw_shift_line_hud
+
         ; Frame timing marker: green when logic/draw is done.
         lda #$05
         sta $d020
         jmp main_loop
+
+maybe_draw_shift_line_hud:
+        lda shift_line_dirty
+        beq maybe_draw_shift_line_hud_done
+        jsr draw_shift_line_hud
+        lda #0
+        sta shift_line_dirty
+maybe_draw_shift_line_hud_done:
+        rts
 
 handle_input:
         jsr poll_controls
@@ -413,10 +430,286 @@ reset_run_speed:
         sta move_step
         rts
 
+init_raster_split:
+        ; Disable CIA IRQ sources; use VIC raster IRQ only.
+        lda #$7f
+        sta $dc0d
+        sta $dd0d
+        lda $dc0d
+        lda $dd0d
+
+        lda #<irq_split
+        sta $0314
+        lda #>irq_split
+        sta $0315
+
+        lda #0
+        sta irq_phase
+        lda #IRQ_LINE_HUD
+        sta $d012
+        lda $d011
+        and #%01111111
+        sta $d011
+        lda #$01
+        sta $d01a
+        lda #$01
+        sta $d019
+        rts
+
+irq_split:
+        pha
+        txa
+        pha
+        tya
+        pha
+
+        lda irq_phase
+        beq irq_hud_phase
+        cmp #1
+        beq irq_world_phase
+        cmp #2
+        beq irq_shift_phase
+        cmp #3
+        bne irq_marker_off_jump
+        jmp irq_marker_on_phase
+irq_marker_off_jump:
+        jmp irq_marker_off_phase
+
+irq_world_phase:
+        lda world_d016
+        sta $d016
+
+        lda pending_coarse_shift
+        beq irq_world_marker_check
+        lda #IRQ_LINE_SHIFT
+        sta $d012
+        lda #2
+        sta irq_phase
+        jmp irq_done
+
+irq_world_marker_check:
+        lda shift_marker_active
+        beq irq_world_to_hud
+        lda shift_marker_line
+        cmp #IRQ_LINE_WORLD
+        bcc irq_world_to_hud
+        sta $d012
+        lda #2
+        sta irq_phase
+        jmp irq_done
+
+irq_world_to_hud:
+        lda #IRQ_LINE_HUD
+        sta $d012
+        lda #0
+        sta irq_phase
+        jmp irq_done
+
+irq_hud_phase:
+        lda d016_base
+        sta $d016
+        lda #IRQ_LINE_WORLD
+        sta $d012
+        lda #1
+        sta irq_phase
+        jmp irq_done
+
+irq_shift_phase:
+        lda pending_coarse_shift
+        beq irq_shift_to_hud
+        cmp #1
+        beq irq_shift_right
+
+irq_shift_left:
+        lda #0
+        sta fine_scroll
+        jsr apply_fine_scroll
+        dec scroll_col
+        jsr draw_world_shift_right
+        lda #0
+        sta pending_coarse_shift
+        jmp irq_shift_done
+
+irq_shift_right:
+        lda #7
+        sta fine_scroll
+        jsr apply_fine_scroll
+        inc scroll_col
+        jsr draw_world_shift_left
+        lda #0
+        sta pending_coarse_shift
+
+irq_shift_done:
+        lda $d011
+        and #%10000000
+        beq irq_shift_line_low
+        lda #1
+        sta shift_marker_line_hi
+        jmp irq_shift_store_line
+irq_shift_line_low:
+        lda #0
+        sta shift_marker_line_hi
+irq_shift_store_line:
+        lda $d012
+        sta shift_marker_line
+        lda #1
+        sta shift_line_dirty
+
+        ; The coarse copy and fine scroll change commit together here.
+        lda world_d016
+        sta $d016
+
+        lda $d011
+        and #%10000000
+        bne irq_shift_to_hud
+        lda $d012
+        cmp #IRQ_LINE_HUD
+        bcc irq_shift_to_hud
+        cmp #IRQ_LINE_WORLD
+        bcc irq_shift_to_world
+
+irq_shift_to_hud:
+        lda #IRQ_LINE_HUD
+        sta $d012
+        lda #0
+        sta irq_phase
+        jmp irq_done
+
+irq_shift_to_world:
+        lda #IRQ_LINE_WORLD
+        sta $d012
+        lda #1
+        sta irq_phase
+        jmp irq_done
+
+irq_marker_on_phase:
+        lda #$01
+        sta $d020
+        lda #$06
+        sta $d021
+        lda shift_marker_line
+        clc
+        adc #3
+        sta $d012
+        lda #3
+        sta irq_phase
+        jmp irq_done
+
+irq_marker_off_phase:
+        lda #$05
+        sta $d020
+        lda #$00
+        sta $d021
+        lda #0
+        sta shift_marker_active
+        lda #IRQ_LINE_HUD
+        sta $d012
+        lda #0
+        sta irq_phase
+
+irq_done:
+        lda #$01
+        sta $d019
+        pla
+        tay
+        pla
+        tax
+        pla
+        jmp $ea31
+
 apply_fine_scroll:
         lda d016_base
         ora fine_scroll
+        sta world_d016
+        jsr draw_scroll_state_hud
+        lda irq_phase
+        bne apply_fine_done
+        lda world_d016
         sta $d016
+apply_fine_done:
+        rts
+
+draw_scroll_state_hud:
+        lda #83
+        sta $040f
+        lda #$07
+        sta $d80f
+        lda fine_scroll
+        clc
+        adc #48
+        sta $0410
+        lda #$07
+        sta $d810
+        rts
+
+draw_shift_line_hud:
+        ; Show last coarse-shift completion raster line (0-311) at HUD cols 33-39.
+        lda #12
+        sta $0421
+        lda #$07
+        sta $d821
+        lda #58
+        sta $0422
+        lda #$07
+        sta $d822
+
+        lda shift_marker_line_hi
+        beq shift_line_value_ready
+        lda #2
+        sta shift_line_hundreds
+        lda shift_marker_line
+        clc
+        adc #56
+        cmp #100
+        bcc shift_line_tens_prepare
+        sec
+        sbc #100
+        inc shift_line_hundreds
+        jmp shift_line_tens_prepare
+
+shift_line_value_ready:
+        lda shift_marker_line
+        ldx #0
+shift_line_hundreds_loop:
+        cmp #100
+        bcc shift_line_hundreds_done
+        sec
+        sbc #100
+        inx
+        bne shift_line_hundreds_loop
+shift_line_hundreds_done:
+        stx shift_line_hundreds
+
+shift_line_tens_prepare:
+        ldx #0
+shift_line_tens_loop:
+        cmp #10
+        bcc shift_line_tens_done
+        sec
+        sbc #10
+        inx
+        bne shift_line_tens_loop
+shift_line_tens_done:
+        stx shift_line_tens
+        sta shift_line_ones
+
+        lda shift_line_hundreds
+        clc
+        adc #48
+        sta $0423
+        lda shift_line_tens
+        clc
+        adc #48
+        sta $0424
+        lda shift_line_ones
+        clc
+        adc #48
+        sta $0425
+
+        lda #$07
+        sta $d823
+        sta $d824
+        sta $d825
         rts
 
 camera_scroll_right:
@@ -426,9 +719,12 @@ cam_scroll_right_loop:
         jsr camera_scroll_right_1px
         dec scroll_steps
         bne cam_scroll_right_loop
+        jsr apply_fine_scroll
         rts
 
 camera_scroll_right_1px:
+        lda pending_coarse_shift
+        bne cam_right_done
         lda scroll_col
         cmp max_scroll
         bcc cam_right_continue
@@ -437,15 +733,11 @@ camera_scroll_right_1px:
 cam_right_continue:
         lda fine_scroll
         bne cam_right_dec
-        lda #7
-        sta fine_scroll
-        inc scroll_col
-        jsr draw_world_shift_left
-        jmp cam_right_apply
+        lda #1
+        sta pending_coarse_shift
+        jmp cam_right_done
 cam_right_dec:
         dec fine_scroll
-cam_right_apply:
-        jsr apply_fine_scroll
 cam_right_done:
         rts
 
@@ -456,9 +748,12 @@ cam_scroll_left_loop:
         jsr camera_scroll_left_1px
         dec scroll_steps
         bne cam_scroll_left_loop
+        jsr apply_fine_scroll
         rts
 
 camera_scroll_left_1px:
+        lda pending_coarse_shift
+        bne cam_left_done
         lda scroll_col
         bne cam_left_continue
         lda fine_scroll
@@ -467,16 +762,15 @@ cam_left_continue:
         lda fine_scroll
         cmp #7
         bne cam_left_inc
-        lda #0
-        sta fine_scroll
-        dec scroll_col
-        jsr draw_world_shift_right
-        jmp cam_left_apply
+        lda #2
+        sta pending_coarse_shift
+        jmp cam_left_done
 cam_left_inc:
         inc fine_scroll
-cam_left_apply:
-        jsr apply_fine_scroll
 cam_left_done:
+        rts
+
+process_pending_coarse_shift:
         rts
 
 key_left:
@@ -633,6 +927,7 @@ blocked_yes:
 
 poll_controls:
         ; Z = PA1/PB4, X = PA2/PB7, SPACE = PA7/PB4.
+        sei
         lda #0
         sta left_down
         sta right_down
@@ -667,10 +962,12 @@ space_done:
 
         lda #$ff
         sta $dc00
+        cli
         rts
 
 check_star_cheat:
         ; '*' key matrix check without consuming KERNAL key buffer.
+        sei
         lda #$bf
         sta $dc00
         lda $dc01
@@ -682,12 +979,117 @@ check_star_cheat:
 no_star_cheat:
         lda #$ff
         sta $dc00
+        cli
         rts
 
 poll_action_keys:
-        ; One-shot action key polling (C/B/R) via KERNAL GETIN.
-        jsr $ffe4
+        ; Direct CIA keyboard matrix scan for action keys.
+        ; C64 matrix: Row $7F=1,2,Q  Row $FD=3,4,E  Row $FB=5,R,D,C  Row $F7=B
+        sei
+        lda #0
         sta action_key
+
+        ; Row $7F: '1' (bit0), '2' (bit3), 'Q' (bit6)
+        lda #$7f
+        sta $dc00
+        lda $dc01
+        tax
+        txa
+        and #%01000000
+        bne not_q_key
+        lda #81
+        sta action_key
+        jmp action_key_done
+not_q_key:
+        txa
+        and #%00000001
+        bne not_1_key
+        lda #49
+        sta action_key
+        jmp action_key_done
+not_1_key:
+        txa
+        and #%00001000
+        bne not_2_key
+        lda #50
+        sta action_key
+        jmp action_key_done
+not_2_key:
+
+        ; Row $FD: '3' (bit0), '4' (bit3), 'E' (bit6)
+        lda #$fd
+        sta $dc00
+        lda $dc01
+        tax
+        txa
+        and #%00000001
+        bne not_3_key
+        lda #51
+        sta action_key
+        jmp action_key_done
+not_3_key:
+        txa
+        and #%00001000
+        bne not_4_key
+        lda #52
+        sta action_key
+        jmp action_key_done
+not_4_key:
+        txa
+        and #%01000000
+        bne not_e_key
+        lda #69
+        sta action_key
+        jmp action_key_done
+not_e_key:
+
+        ; Row $FB: '5' (bit0), 'R' (bit1), 'D' (bit2), 'C' (bit4)
+        lda #$fb
+        sta $dc00
+        lda $dc01
+        tax
+        txa
+        and #%00000001
+        bne not_5_key
+        lda #53
+        sta action_key
+        jmp action_key_done
+not_5_key:
+        txa
+        and #%00000010
+        bne not_r_key
+        lda #82
+        sta action_key
+        jmp action_key_done
+not_r_key:
+        txa
+        and #%00000100
+        bne not_d_key
+        lda #68
+        sta action_key
+        jmp action_key_done
+not_d_key:
+        txa
+        and #%00010000
+        bne not_c_key
+        lda #67
+        sta action_key
+        jmp action_key_done
+not_c_key:
+
+        ; Row $F7: 'B' (bit4)
+        lda #$f7
+        sta $dc00
+        lda $dc01
+        and #%00010000
+        bne action_key_done
+        lda #66
+        sta action_key
+
+action_key_done:
+        lda #$ff
+        sta $dc00
+        cli
         rts
 
 check_level_hotkey:
@@ -786,6 +1188,29 @@ player_b_normal:
         sta $07f8
         rts
 
+update_aux_sprite_msb:
+        ; Update sprite X MSB bits for bird (bit1), cloud1 (bit2), cloud2 (bit3), preserving other bits.
+        lda $d010
+        and #%11110001
+        sta d010_mask_tmp
+
+        lda #0
+        ldy bird_x_msb
+        beq msb_bird_done
+        ora #%00000010
+msb_bird_done:
+        ldy cloud1_x_msb
+        beq msb_cloud1_done
+        ora #%00000100
+msb_cloud1_done:
+        ldy cloud2_x_msb
+        beq msb_cloud2_done
+        ora #%00001000
+msb_cloud2_done:
+        ora d010_mask_tmp
+        sta $d010
+        rts
+
 init_clouds:
         lda $d012
         sta rng_state
@@ -796,6 +1221,8 @@ init_clouds:
         lda #0
         sta cloud1_x
         sta cloud2_x
+        sta cloud1_x_msb
+        sta cloud2_x_msb
         sta cloud1_tick
         sta cloud2_tick
         lda #90
@@ -815,8 +1242,10 @@ update_clouds:
 init_bird:
         jsr random_bird_delay
         sta bird_delay
-        lda #250
+        lda #80
         sta bird_x
+        lda #1
+        sta bird_x_msb
         lda #84
         sta bird_y
         lda #0
@@ -843,8 +1272,10 @@ bird_cooldown_done:
 bird_launch:
         jsr random_bird_y
         sta bird_y
-        lda #250
+        lda #80
         sta bird_x
+        lda #1
+        sta bird_x_msb
         lda #0
         sta bird_tick
 
@@ -854,6 +1285,20 @@ bird_active:
         and #%00000001
         bne bird_draw_current
 
+        lda bird_x_msb
+        beq bird_move_low
+        lda bird_x
+        bne bird_move_high_dec
+        lda #$ff
+        sta bird_x
+        lda #0
+        sta bird_x_msb
+        jmp bird_draw
+bird_move_high_dec:
+        dec bird_x
+        jmp bird_draw
+
+bird_move_low:
         lda bird_x
         sec
         sbc #1
@@ -863,8 +1308,10 @@ bird_active:
 
         jsr random_bird_delay
         sta bird_delay
-        lda #250
+        lda #80
         sta bird_x
+        lda #1
+        sta bird_x_msb
         lda #255
         sta $d003
         rts
@@ -916,6 +1363,8 @@ maybe_bird_chirp:
         lda bird_chirp_cooldown
         bne bird_chirp_done
         lda sound_timer
+        bne bird_chirp_done
+        lda bird_x_msb
         bne bird_chirp_done
 
         lda bird_x
@@ -1011,10 +1460,17 @@ ride_release:
 follow_cloud1:
         lda cloud1_delay
         bne ride_release
+        lda cloud1_x_msb
+        beq follow_cloud1_low
+        lda #232
+        sta x_pos
+        jmp follow_cloud1_y
+follow_cloud1_low:
         lda cloud1_x
         clc
         adc #8
         sta x_pos
+follow_cloud1_y:
         lda cloud1_y
         sec
         sbc #10
@@ -1026,10 +1482,17 @@ follow_cloud1:
 follow_cloud2:
         lda cloud2_delay
         bne ride_release
+        lda cloud2_x_msb
+        beq follow_cloud2_low
+        lda #232
+        sta x_pos
+        jmp follow_cloud2_y
+follow_cloud2_low:
         lda cloud2_x
         clc
         adc #8
         sta x_pos
+follow_cloud2_y:
         lda cloud2_y
         sec
         sbc #10
@@ -1041,10 +1504,17 @@ follow_cloud2:
 follow_bird:
         lda bird_delay
         bne ride_release
+        lda bird_x_msb
+        beq follow_bird_low
+        lda #232
+        sta x_pos
+        jmp follow_bird_y
+follow_bird_low:
         lda bird_x
         clc
         adc #6
         sta x_pos
+follow_bird_y:
         lda bird_y
         sec
         sbc #8
@@ -1101,6 +1571,8 @@ ride_scroll_left:
 near_cloud1:
         lda cloud1_delay
         bne near_cloud1_no
+        lda cloud1_x_msb
+        bne near_cloud1_no
         lda cloud1_x
         jsr abs_diff_x
         cmp #24
@@ -1118,6 +1590,8 @@ near_cloud1_no:
 near_cloud2:
         lda cloud2_delay
         bne near_cloud2_no
+        lda cloud2_x_msb
+        bne near_cloud2_no
         lda cloud2_x
         jsr abs_diff_x
         cmp #24
@@ -1134,6 +1608,8 @@ near_cloud2_no:
 
 near_bird:
         lda bird_delay
+        bne near_bird_no
+        lda bird_x_msb
         bne near_bird_no
         lda bird_x
         jsr abs_diff_x
@@ -1183,6 +1659,7 @@ cloud1_launch:
         sta cloud1_y
         lda #0
         sta cloud1_x
+        sta cloud1_x_msb
 
 cloud1_active:
         inc cloud1_tick
@@ -1194,15 +1671,29 @@ cloud1_active:
         clc
         adc #1
         sta cloud1_x
-        cmp #250
+        bne cloud1_check_limit
+        lda cloud1_x_msb
+        eor #1
+        sta cloud1_x_msb
+
+cloud1_check_limit:
+        lda cloud1_x_msb
+        beq cloud1_draw_low
+        lda cloud1_x
+        cmp #96
         bcc cloud1_draw
+
         lda #0
         sta cloud1_x
+        sta cloud1_x_msb
         jsr random_delay
         sta cloud1_delay
         lda #255
         sta $d005
         rts
+
+cloud1_draw_low:
+        lda cloud1_x
 
 cloud1_draw_current:
         lda cloud1_x
@@ -1231,6 +1722,7 @@ cloud2_launch:
         sta cloud2_y
         lda #0
         sta cloud2_x
+        sta cloud2_x_msb
 
 cloud2_active:
         inc cloud2_tick
@@ -1242,15 +1734,29 @@ cloud2_active:
         clc
         adc #1
         sta cloud2_x
-        cmp #250
+        bne cloud2_check_limit
+        lda cloud2_x_msb
+        eor #1
+        sta cloud2_x_msb
+
+cloud2_check_limit:
+        lda cloud2_x_msb
+        beq cloud2_draw_low
+        lda cloud2_x
+        cmp #96
         bcc cloud2_draw
+
         lda #0
         sta cloud2_x
+        sta cloud2_x_msb
         jsr random_delay
         sta cloud2_delay
         lda #255
         sta $d007
         rts
+
+cloud2_draw_low:
+        lda cloud2_x
 
 cloud2_draw_current:
         lda cloud2_x
@@ -1922,7 +2428,9 @@ collect_probe5:
         tay
         pla
         jsr collect_if_hit
-        bcc collectibles_done
+        bcs collect_probe5_hit
+        jmp collectibles_done
+collect_probe5_hit:
         rts
 
 collect_if_hit:
@@ -2000,7 +2508,47 @@ clear_collectible_tile:
         ldy world_col
         lda #0
         sta ($fb),y
-        jsr draw_world
+        jsr draw_single_world_cell
+
+draw_single_world_cell:
+        ; Update only the changed visible world cell after collectible pickup.
+        lda world_col
+        sec
+        sbc scroll_col
+        bcc draw_single_cell_done
+        cmp #40
+        bcs draw_single_cell_done
+        sta screen_col
+
+        lda hit_row
+        sec
+        sbc #7
+        tax
+        lda screen_col
+        tay
+        lda #0
+        jsr decode_tile_char_color
+
+        sta draw_char_tmp
+        sty draw_color_tmp
+        lda char_row_ptr_lo,x
+        sta $fb
+        lda char_row_ptr_hi,x
+        sta $fc
+        lda draw_char_tmp
+        ldy screen_col
+        sta ($fb),y
+
+        lda color_row_ptr_lo,x
+        sta $fd
+        lda color_row_ptr_hi,x
+        sta $fe
+        lda draw_color_tmp
+        ldy screen_col
+        sta ($fd),y
+
+draw_single_cell_done:
+        jsr draw_bottom_row_debug
 
 collectibles_done:
         rts
@@ -2280,25 +2828,56 @@ end_prompt_flow:
 check_restart_release:
         lda end_wait_release
         beq check_restart_key
-        jsr $ff9f       ; SCNKEY
-        jsr $ffe4       ; GETIN
-        bne end_prompt_done
+        ; Wait for all keys released before accepting restart.
+        sei
+        lda #$00
+        sta $dc00
+        lda $dc01
+        cmp #$ff
+        bne end_prompt_release_wait
+        lda #$ff
+        sta $dc00
+        cli
         lda #0
         sta end_wait_release
         rts
+end_prompt_release_wait:
+        lda #$ff
+        sta $dc00
+        cli
+        jmp end_prompt_done
 
 check_restart_key:
-        jsr $ff9f       ; SCNKEY
-        jsr $ffe4       ; GETIN
-        beq end_prompt_done
-        cmp #42         ; '*'
+        ; Check if any key is pressed via CIA direct read.
+        sei
+        lda #$00
+        sta $dc00
+        lda $dc01
+        cmp #$ff
+        beq end_prompt_no_key
+        ; Check '*' specifically: row 6 ($BF), bit 1.
+        lda #$bf
+        sta $dc00
+        lda $dc01
+        and #%00000010
         bne restart_default_lives
+        lda #$ff
+        sta $dc00
+        cli
         lda #9
         sta lives
         jsr restart_game
         rts
+end_prompt_no_key:
+        lda #$ff
+        sta $dc00
+        cli
+        jmp end_prompt_done
 
 restart_default_lives:
+        lda #$ff
+        sta $dc00
+        cli
         lda #5
         sta lives
         jsr restart_game
@@ -2333,40 +2912,6 @@ draw_world_loop:
         clc
         adc scroll_col
         sta world_col
-
-        ; Clear dynamic world rows to sky.
-        lda #32
-        sta $0518,x
-        sta $0540,x
-        sta $0568,x
-        sta $0590,x
-        sta $05b8,x
-        sta $05e0,x
-        sta $0608,x
-        sta $0630,x
-        sta $0658,x
-        sta $0680,x
-        sta $06a8,x
-        sta $06d0,x
-        sta $06f8,x
-        sta $0720,x
-        sta $0748,x
-        lda #$0b
-        sta $d918,x
-        sta $d940,x
-        sta $d968,x
-        sta $d990,x
-        sta $d9b8,x
-        sta $d9e0,x
-        sta $da08,x
-        sta $da30,x
-        sta $da58,x
-        sta $da80,x
-        sta $daa8,x
-        sta $dad0,x
-        sta $daf8,x
-        sta $db20,x
-        sta $db48,x
 
         ; Level row 0 -> screen row 7
         lda #0
@@ -2453,108 +2998,37 @@ draw_world_done:
         rts
 
 draw_world_shift_left:
-        ldx #0
-shift_left_row_loop:
-        lda char_row_ptr_lo,x
-        sta $fb
-        lda char_row_ptr_hi,x
-        sta $fc
-        lda char_row_ptr_lo,x
-        clc
-        adc #1
-        sta $fd
-        lda char_row_ptr_hi,x
-        adc #0
-        sta $fe
-        ldy #0
-shift_left_char_copy:
-        lda ($fd),y
-        sta ($fb),y
-        iny
-        cpy #39
-        bne shift_left_char_copy
-
-        lda color_row_ptr_lo,x
-        sta $fb
-        lda color_row_ptr_hi,x
-        sta $fc
-        lda color_row_ptr_lo,x
-        clc
-        adc #1
-        sta $fd
-        lda color_row_ptr_hi,x
-        adc #0
-        sta $fe
-        ldy #0
-shift_left_color_copy:
-        lda ($fd),y
-        sta ($fb),y
-        iny
-        cpy #39
-        bne shift_left_color_copy
-
-        inx
-        cpx #15
-        bne shift_left_row_loop
-
+        lda #$01
+        sta $d020
+        jsr unrolled_shift_left
         jsr fill_right_edge_column
         jsr draw_bottom_row_debug
+        lda #$05
+        sta $d020
         rts
 
 draw_world_shift_right:
-        ldx #0
-shift_right_row_loop:
-        lda char_row_ptr_lo,x
-        sta $fb
-        lda char_row_ptr_hi,x
-        sta $fc
-        lda char_row_ptr_lo,x
-        clc
-        adc #1
-        sta $fd
-        lda char_row_ptr_hi,x
-        adc #0
-        sta $fe
-        ldy #38
-shift_right_char_copy:
-        lda ($fb),y
-        sta ($fd),y
-        dey
-        bpl shift_right_char_copy
-
-        lda color_row_ptr_lo,x
-        sta $fb
-        lda color_row_ptr_hi,x
-        sta $fc
-        lda color_row_ptr_lo,x
-        clc
-        adc #1
-        sta $fd
-        lda color_row_ptr_hi,x
-        adc #0
-        sta $fe
-        ldy #38
-shift_right_color_copy:
-        lda ($fb),y
-        sta ($fd),y
-        dey
-        bpl shift_right_color_copy
-
-        inx
-        cpx #15
-        bne shift_right_row_loop
-
+        lda #$01
+        sta $d020
+        jsr unrolled_shift_right
         jsr fill_left_edge_column
         jsr draw_bottom_row_debug
+        lda #$05
+        sta $d020
         rts
+
+shift_row_save:
+        .byte 0
 
 fill_left_edge_column:
         lda scroll_col
         sta world_col
-        ldx #0
-fill_left_edge_loop:
+        ldx #14
+fill_left_edge_row_loop:
+        stx shift_row_save
         txa
         jsr get_tile_by_row
+        ldx shift_row_save
         jsr decode_tile_char_color
         sta draw_char_tmp
         sty draw_color_tmp
@@ -2563,8 +3037,8 @@ fill_left_edge_loop:
         sta $fb
         lda char_row_ptr_hi,x
         sta $fc
-        lda draw_char_tmp
         ldy #0
+        lda draw_char_tmp
         sta ($fb),y
 
         lda color_row_ptr_lo,x
@@ -2572,12 +3046,10 @@ fill_left_edge_loop:
         lda color_row_ptr_hi,x
         sta $fe
         lda draw_color_tmp
-        ldy #0
         sta ($fd),y
 
-        inx
-        cpx #15
-        bne fill_left_edge_loop
+        dex
+        bpl fill_left_edge_row_loop
         rts
 
 fill_right_edge_column:
@@ -2585,10 +3057,12 @@ fill_right_edge_column:
         clc
         adc #39
         sta world_col
-        ldx #0
-fill_right_edge_loop:
+        ldx #14
+fill_right_edge_row_loop:
+        stx shift_row_save
         txa
         jsr get_tile_by_row
+        ldx shift_row_save
         jsr decode_tile_char_color
         sta draw_char_tmp
         sty draw_color_tmp
@@ -2597,8 +3071,8 @@ fill_right_edge_loop:
         sta $fb
         lda char_row_ptr_hi,x
         sta $fc
-        lda draw_char_tmp
         ldy #39
+        lda draw_char_tmp
         sta ($fb),y
 
         lda color_row_ptr_lo,x
@@ -2606,12 +3080,10 @@ fill_right_edge_loop:
         lda color_row_ptr_hi,x
         sta $fe
         lda draw_color_tmp
-        ldy #39
         sta ($fd),y
 
-        inx
-        cpx #15
-        bne fill_right_edge_loop
+        dex
+        bpl fill_right_edge_row_loop
         rts
 
 draw_bottom_row_debug:
@@ -3123,19 +3595,22 @@ title_prompt_color_done:
         rts
 
 wait_frame:
-        ; Wait for raster MSB high (lines 256+), then low again (new frame),
-        ; and align to line 0 so frame timing starts at true top.
-wait_msb_hi:
+        ; Sync near the end of the visible world so coarse shifts get more
+        ; non-visible time before the next frame's world area starts.
+wait_below_target:
         lda $d011
         and #%10000000
-        beq wait_msb_hi
-wait_msb_lo:
-        lda $d011
-        and #%10000000
-        bne wait_msb_lo
-wait_line0:
+        bne wait_below_target
         lda $d012
-        bne wait_line0
+        cmp #230
+        bcs wait_below_target
+wait_reach_target:
+        lda $d011
+        and #%10000000
+        bne wait_reach_target
+        lda $d012
+        cmp #230
+        bcc wait_reach_target
         rts
 
 x_pos:
@@ -3351,6 +3826,9 @@ jump_table:
 
 TITLE_MUSIC_LEN = 24
 GAMEPLAY_MUSIC_LEN = 32
+IRQ_LINE_HUD = 16
+IRQ_LINE_WORLD = 100
+IRQ_LINE_SHIFT = 200
 
 title_music_lo:
         .byte $2c,$43,$56,$6b,$56,$43,$2c,$22
@@ -3437,13 +3915,58 @@ fine_scroll:
 d016_base:
         .byte $10
 
+world_d016:
+        .byte $10
+
 scroll_steps:
+        .byte 0
+
+pending_coarse_shift:
+        .byte 0
+
+irq_phase:
+        .byte 0
+
+shift_marker_line:
+        .byte IRQ_LINE_WORLD
+
+shift_marker_line_hi:
+        .byte 0
+
+shift_marker_active:
+        .byte 0
+
+shift_line_hundreds:
+        .byte 0
+
+shift_line_tens:
+        .byte 0
+
+shift_line_ones:
+        .byte 0
+
+shift_line_dirty:
+        .byte 0
+
+bird_x_msb:
+        .byte 1
+
+cloud1_x_msb:
+        .byte 0
+
+cloud2_x_msb:
+        .byte 0
+
+d010_mask_tmp:
         .byte 0
 
 draw_char_tmp:
         .byte 0
 
 draw_color_tmp:
+        .byte 0
+
+screen_col:
         .byte 0
 
 char_row_ptr_lo:
@@ -3477,8 +4000,6 @@ prompt_shown:
 
 end_wait_release:
         .byte 0
-
-.include "levels/active_levelset.inc"
 
 *=$3c00
 sprite_frame_a:
@@ -3687,3 +4208,240 @@ chicken_sprite_b:
         .byte $00,$42,$00
         .byte $00,$24,$00
         .byte $00
+
+*=$4000
+.include "levels/active_levelset.inc"
+
+; --- Unrolled scroll shift routines, placed after level data ---
+; Screen RAM rows: $0518,$0540,$0568,$0590,$05b8,$05e0,$0608,$0630,$0658,$0680,$06a8,$06d0,$06f8,$0720,$0748
+; Color RAM = screen + $d400
+
+shift_left_39 .macro base
+        lda \base+1
+        sta \base+0
+        lda \base+2
+        sta \base+1
+        lda \base+3
+        sta \base+2
+        lda \base+4
+        sta \base+3
+        lda \base+5
+        sta \base+4
+        lda \base+6
+        sta \base+5
+        lda \base+7
+        sta \base+6
+        lda \base+8
+        sta \base+7
+        lda \base+9
+        sta \base+8
+        lda \base+10
+        sta \base+9
+        lda \base+11
+        sta \base+10
+        lda \base+12
+        sta \base+11
+        lda \base+13
+        sta \base+12
+        lda \base+14
+        sta \base+13
+        lda \base+15
+        sta \base+14
+        lda \base+16
+        sta \base+15
+        lda \base+17
+        sta \base+16
+        lda \base+18
+        sta \base+17
+        lda \base+19
+        sta \base+18
+        lda \base+20
+        sta \base+19
+        lda \base+21
+        sta \base+20
+        lda \base+22
+        sta \base+21
+        lda \base+23
+        sta \base+22
+        lda \base+24
+        sta \base+23
+        lda \base+25
+        sta \base+24
+        lda \base+26
+        sta \base+25
+        lda \base+27
+        sta \base+26
+        lda \base+28
+        sta \base+27
+        lda \base+29
+        sta \base+28
+        lda \base+30
+        sta \base+29
+        lda \base+31
+        sta \base+30
+        lda \base+32
+        sta \base+31
+        lda \base+33
+        sta \base+32
+        lda \base+34
+        sta \base+33
+        lda \base+35
+        sta \base+34
+        lda \base+36
+        sta \base+35
+        lda \base+37
+        sta \base+36
+        lda \base+38
+        sta \base+37
+        lda \base+39
+        sta \base+38
+.endm
+
+shift_right_39 .macro base
+        lda \base+38
+        sta \base+39
+        lda \base+37
+        sta \base+38
+        lda \base+36
+        sta \base+37
+        lda \base+35
+        sta \base+36
+        lda \base+34
+        sta \base+35
+        lda \base+33
+        sta \base+34
+        lda \base+32
+        sta \base+33
+        lda \base+31
+        sta \base+32
+        lda \base+30
+        sta \base+31
+        lda \base+29
+        sta \base+30
+        lda \base+28
+        sta \base+29
+        lda \base+27
+        sta \base+28
+        lda \base+26
+        sta \base+27
+        lda \base+25
+        sta \base+26
+        lda \base+24
+        sta \base+25
+        lda \base+23
+        sta \base+24
+        lda \base+22
+        sta \base+23
+        lda \base+21
+        sta \base+22
+        lda \base+20
+        sta \base+21
+        lda \base+19
+        sta \base+20
+        lda \base+18
+        sta \base+19
+        lda \base+17
+        sta \base+18
+        lda \base+16
+        sta \base+17
+        lda \base+15
+        sta \base+16
+        lda \base+14
+        sta \base+15
+        lda \base+13
+        sta \base+14
+        lda \base+12
+        sta \base+13
+        lda \base+11
+        sta \base+12
+        lda \base+10
+        sta \base+11
+        lda \base+9
+        sta \base+10
+        lda \base+8
+        sta \base+9
+        lda \base+7
+        sta \base+8
+        lda \base+6
+        sta \base+7
+        lda \base+5
+        sta \base+6
+        lda \base+4
+        sta \base+5
+        lda \base+3
+        sta \base+4
+        lda \base+2
+        sta \base+3
+        lda \base+1
+        sta \base+2
+        lda \base+0
+        sta \base+1
+.endm
+
+unrolled_shift_left:
+        ; Top to bottom: row 0..14, char then color per row.
+        shift_left_39 $0518
+        shift_left_39 $d918
+        shift_left_39 $0540
+        shift_left_39 $d940
+        shift_left_39 $0568
+        shift_left_39 $d968
+        shift_left_39 $0590
+        shift_left_39 $d990
+        shift_left_39 $05b8
+        shift_left_39 $d9b8
+        shift_left_39 $05e0
+        shift_left_39 $d9e0
+        shift_left_39 $0608
+        shift_left_39 $da08
+        shift_left_39 $0630
+        shift_left_39 $da30
+        shift_left_39 $0658
+        shift_left_39 $da58
+        shift_left_39 $0680
+        shift_left_39 $da80
+        shift_left_39 $06a8
+        shift_left_39 $daa8
+        shift_left_39 $06d0
+        shift_left_39 $dad0
+        shift_left_39 $06f8
+        shift_left_39 $daf8
+        shift_left_39 $0720
+        shift_left_39 $db20
+        shift_left_39 $0748
+        shift_left_39 $db48
+        rts
+
+unrolled_shift_right:
+        ; Top to bottom: row 0..14, char then color per row.
+        shift_right_39 $0518
+        shift_right_39 $d918
+        shift_right_39 $0540
+        shift_right_39 $d940
+        shift_right_39 $0568
+        shift_right_39 $d968
+        shift_right_39 $0590
+        shift_right_39 $d990
+        shift_right_39 $05b8
+        shift_right_39 $d9b8
+        shift_right_39 $05e0
+        shift_right_39 $d9e0
+        shift_right_39 $0608
+        shift_right_39 $da08
+        shift_right_39 $0630
+        shift_right_39 $da30
+        shift_right_39 $0658
+        shift_right_39 $da58
+        shift_right_39 $0680
+        shift_right_39 $da80
+        shift_right_39 $06a8
+        shift_right_39 $daa8
+        shift_right_39 $06d0
+        shift_right_39 $dad0
+        shift_right_39 $06f8
+        shift_right_39 $daf8
+        shift_right_39 $0720
+        shift_right_39 $db20
+        shift_right_39 $0748
+        shift_right_39 $db48
+        rts
