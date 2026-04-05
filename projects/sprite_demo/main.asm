@@ -124,6 +124,7 @@ fill_color:
 
 main_loop:
         jsr wait_frame
+        jsr process_pending_coarse_shift
 
         ; Frame timing marker: red while updates run.
         lda #$02
@@ -297,6 +298,7 @@ frame_done:
         jsr update_aux_sprite_msb
         jsr update_audio
         jsr refresh_uniform_row_idle
+        jsr draw_bottom_row_debug
 
         ; Frame timing marker: green when logic/draw is done.
         lda #$05
@@ -496,9 +498,12 @@ irq_hud_line_done:
 
 irq_shift_phase:
         lda pending_coarse_shift
-        beq irq_shift_to_hud
+        bne irq_shift_check_direction
+        jmp irq_shift_to_hud
+irq_shift_check_direction:
         cmp #1
         beq irq_shift_right
+        jmp irq_shift_to_hud
 
 irq_shift_left:
         lda #0
@@ -602,7 +607,6 @@ draw_shift_line_hud:
         sta $041d
         lda #$07
         sta $d81d
-
         lda row2_marker_line
         ldx row2_marker_line_hi
         jsr format_line_digits
@@ -759,6 +763,7 @@ camera_scroll_left_1px:
         lda scroll_col
         bne cam_left_continue
         lda fine_scroll
+        cmp #7
         beq cam_left_done
 cam_left_continue:
         lda fine_scroll
@@ -773,6 +778,21 @@ cam_left_done:
         rts
 
 process_pending_coarse_shift:
+        lda pending_coarse_shift
+        cmp #2
+        bne process_pending_coarse_shift_done
+        lda #0
+        sta fine_scroll
+        jsr apply_fine_scroll
+        lda #0
+        sta early_world_commit_done
+        lda d016_base
+        sta $d016
+        dec scroll_col
+        jsr draw_world_shift_right
+        lda #0
+        sta pending_coarse_shift
+process_pending_coarse_shift_done:
         rts
 
 key_left:
@@ -2542,15 +2562,13 @@ clear_collectible_tile:
         lda hit_row
         sec
         sbc #7
-        pha
         jsr set_level_row_ptr
         ldy world_col
         lda #0
         sta ($fb),y
         jsr draw_single_world_cell
-        pla
-        jsr update_uniform_row_state
-        jsr draw_bottom_row_debug
+        lda #1
+        sta uniform_rescan_pending
         rts
 
 draw_single_world_cell:
@@ -3039,6 +3057,27 @@ draw_world_done:
         jsr draw_bottom_row_debug
         rts
 
+shift_right_row .macro base, colorbase
+        lda #<\base
+        sta $fb
+        lda #>\base
+        sta $fc
+        jsr shift_ptr_row_right_39_fast
+        lda #<\colorbase
+        sta $fb
+        lda #>\colorbase
+        sta $fc
+        jsr shift_ptr_row_right_39_fast
+.endm
+
+shift_right_row_if_needed .macro row, base, colorbase
+        lda uniform_row_tiles+\row
+        cmp #$ff
+        bne shift_right_skip\row
+        shift_right_row \base, \colorbase
+shift_right_skip\row:
+.endm
+
 draw_world_shift_left:
         lda #$01
         sta $d020
@@ -3050,7 +3089,8 @@ draw_world_shift_left_sparse:
         jsr unrolled_shift_left
 draw_world_shift_left_done:
         jsr fill_right_edge_column
-        jsr draw_bottom_row_debug
+        lda #1
+        sta uniform_rescan_pending
         lda #$05
         sta $d020
         rts
@@ -3058,34 +3098,121 @@ draw_world_shift_left_done:
 draw_world_shift_right:
         lda #$01
         sta $d020
-        jsr unrolled_shift_right
-        jsr fill_left_edge_column_no_uniform
-        jsr invalidate_uniform_rows
-        jsr draw_bottom_row_debug
+        lda scroll_skip_row_count
+        bne draw_world_shift_right_sparse
+        jsr simple_shift_right_rows
+        jmp draw_world_shift_right_done
+draw_world_shift_right_sparse:
+        jsr simple_shift_right_rows_sparse
+draw_world_shift_right_done:
+        jsr fill_left_edge_row0
+        jsr fill_left_edge_column
+        lda #1
+        sta uniform_rescan_pending
         lda #$05
         sta $d020
+        rts
+
+simple_shift_right_rows:
+        shift_right_row $0518, $d918
+        shift_right_row $0540, $d940
+        shift_right_row $0568, $d968
+        shift_right_row $0590, $d990
+        shift_right_row $05b8, $d9b8
+        shift_right_row $05e0, $d9e0
+        shift_right_row $0608, $da08
+        shift_right_row $0630, $da30
+        shift_right_row $0658, $da58
+        shift_right_row $0680, $da80
+        shift_right_row $06a8, $daa8
+        shift_right_row $06d0, $dad0
+        shift_right_row $06f8, $daf8
+        shift_right_row $0720, $db20
+        shift_right_row $0748, $db48
+        rts
+
+simple_shift_right_rows_sparse:
+        shift_right_row_if_needed 0, $0518, $d918
+        shift_right_row_if_needed 1, $0540, $d940
+        shift_right_row_if_needed 2, $0568, $d968
+        shift_right_row_if_needed 3, $0590, $d990
+        shift_right_row_if_needed 4, $05b8, $d9b8
+        shift_right_row_if_needed 5, $05e0, $d9e0
+        shift_right_row_if_needed 6, $0608, $da08
+        shift_right_row_if_needed 7, $0630, $da30
+        shift_right_row_if_needed 8, $0658, $da58
+        shift_right_row_if_needed 9, $0680, $da80
+        shift_right_row_if_needed 10, $06a8, $daa8
+        shift_right_row_if_needed 11, $06d0, $dad0
+        shift_right_row_if_needed 12, $06f8, $daf8
+        shift_right_row_if_needed 13, $0720, $db20
+        shift_right_row_if_needed 14, $0748, $db48
+        rts
+
+shift_ptr_row_right_step .macro col
+        ldy #\col
+        lda ($fb),y
+        iny
+        sta ($fb),y
+.endm
+
+shift_ptr_row_right_39_fast:
+        shift_ptr_row_right_step 38
+        shift_ptr_row_right_step 37
+        shift_ptr_row_right_step 36
+        shift_ptr_row_right_step 35
+        shift_ptr_row_right_step 34
+        shift_ptr_row_right_step 33
+        shift_ptr_row_right_step 32
+        shift_ptr_row_right_step 31
+        shift_ptr_row_right_step 30
+        shift_ptr_row_right_step 29
+        shift_ptr_row_right_step 28
+        shift_ptr_row_right_step 27
+        shift_ptr_row_right_step 26
+        shift_ptr_row_right_step 25
+        shift_ptr_row_right_step 24
+        shift_ptr_row_right_step 23
+        shift_ptr_row_right_step 22
+        shift_ptr_row_right_step 21
+        shift_ptr_row_right_step 20
+        shift_ptr_row_right_step 19
+        shift_ptr_row_right_step 18
+        shift_ptr_row_right_step 17
+        shift_ptr_row_right_step 16
+        shift_ptr_row_right_step 15
+        shift_ptr_row_right_step 14
+        shift_ptr_row_right_step 13
+        shift_ptr_row_right_step 12
+        shift_ptr_row_right_step 11
+        shift_ptr_row_right_step 10
+        shift_ptr_row_right_step 9
+        shift_ptr_row_right_step 8
+        shift_ptr_row_right_step 7
+        shift_ptr_row_right_step 6
+        shift_ptr_row_right_step 5
+        shift_ptr_row_right_step 4
+        shift_ptr_row_right_step 3
+        shift_ptr_row_right_step 2
+        shift_ptr_row_right_step 1
+        shift_ptr_row_right_step 0
+        rts
+
+shift_ptr_row_right_39:
+        ldy #38
+shift_ptr_row_right_39_loop:
+        lda ($fb),y
+        iny
+        sta ($fb),y
+        dey
+        dey
+        bpl shift_ptr_row_right_39_loop
         rts
 
 shift_row_save:
         .byte 0
 
 fill_left_edge_row0:
-        lda scroll_col
-        sta world_col
-        lda #0
-        jsr get_tile_by_row
-        ldx #0
-        jsr decode_tile_char_color
-        sta draw_char_tmp
-        sta $0518
-        tya
-        sta $d918
-        lda draw_char_tmp
-        ldx #0
-        jsr update_uniform_row_after_edge
-        rts
-
-fill_left_edge_row0_no_uniform:
         lda scroll_col
         sta world_col
         lda #0
@@ -3106,13 +3233,9 @@ fill_right_edge_row0:
         jsr get_tile_by_row
         ldx #0
         jsr decode_tile_char_color
-        sta draw_char_tmp
         sta $053f
         tya
         sta $d93f
-        lda draw_char_tmp
-        ldx #0
-        jsr update_uniform_row_after_edge
         rts
 
 fill_left_edge_column:
@@ -3143,45 +3266,9 @@ fill_left_edge_row_loop:
         lda draw_color_tmp
         sta ($fd),y
 
-        lda draw_char_tmp
-        ldy draw_color_tmp
-        ldx shift_row_save
-        jsr update_uniform_row_after_edge
-
         inx
         cpx #15
         bcc fill_left_edge_row_loop
-        rts
-
-fill_left_edge_column_no_uniform:
-        lda scroll_col
-        sta world_col
-        ldx #1
-fill_left_edge_no_uniform_row_loop:
-        stx shift_row_save
-        txa
-        jsr get_tile_by_row
-        ldx shift_row_save
-        jsr decode_tile_char_color
-        sty draw_color_tmp
-
-        lda char_row_ptr_lo,x
-        sta $fb
-        lda char_row_ptr_hi,x
-        sta $fc
-        ldy #0
-        sta ($fb),y
-
-        lda color_row_ptr_lo,x
-        sta $fd
-        lda color_row_ptr_hi,x
-        sta $fe
-        lda draw_color_tmp
-        sta ($fd),y
-
-        inx
-        cpx #15
-        bcc fill_left_edge_no_uniform_row_loop
         rts
 
 fill_right_edge_column:
@@ -3214,11 +3301,6 @@ fill_right_edge_row_loop:
         lda draw_color_tmp
         sta ($fd),y
 
-        lda draw_char_tmp
-        ldy draw_color_tmp
-        ldx shift_row_save
-        jsr update_uniform_row_after_edge
-
         inx
         cpx #15
         bcc fill_right_edge_row_loop
@@ -3232,7 +3314,7 @@ draw_bottom_row_debug:
         sta $0429
         lda #58
         sta $042a
-        lda #$0f
+        lda #$07
         sta $d828
         sta $d829
         sta $d82a
@@ -3245,13 +3327,13 @@ draw_bottom_row_debug:
         pha
         lda #49
         sta $042b
-        lda #$0f
+        lda #$07
         sta $d82b
         pla
         clc
         adc #48
         sta $042c
-        lda #$0f
+        lda #$07
         sta $d82c
         jmp draw_skip_count_done
 
@@ -3259,19 +3341,19 @@ draw_skip_single_digit:
         pha
         lda #32
         sta $042b
-        lda #$0f
+        lda #$07
         sta $d82b
         pla
         clc
         adc #48
         sta $042c
-        lda #$0f
+        lda #$07
         sta $d82c
 
 draw_skip_count_done:
         lda #32
         sta $042d
-        lda #$0f
+        lda #$07
         sta $d82d
 
         ldx #0
@@ -3286,7 +3368,7 @@ draw_skip_pattern_dash:
         lda #45
 draw_skip_pattern_store:
         sta $042e,x
-        lda #$0f
+        lda #$07
         sta $d82e,x
         inx
         cpx #LEVEL_ROWS
@@ -3297,7 +3379,7 @@ draw_skip_pattern_store:
         sta $0450
         lda #58
         sta $0451
-        lda #$0f
+        lda #$07
         sta $d850
         sta $d851
 
@@ -3312,7 +3394,7 @@ draw_skip_index_digit:
         clc
         adc #48
         sta $0452,x
-        lda #$0f
+        lda #$07
         sta $d852,x
         inx
         cpx #LEVEL_ROWS
@@ -3806,7 +3888,14 @@ refresh_uniform_row_idle:
         bne refresh_uniform_row_idle_done
         lda level_height
         beq refresh_uniform_row_idle_done
+        lda uniform_rescan_pending
+        beq refresh_uniform_row_idle_check_index
+        jsr scan_uniform_rows
+        lda #0
+        sta uniform_rescan_pending
+        jmp refresh_uniform_row_idle_done
 
+refresh_uniform_row_idle_check_index:
         lda uniform_idle_row
         cmp level_height
         bcc refresh_uniform_row_idle_check
@@ -4480,6 +4569,9 @@ scroll_skip_row_count:
 uniform_idle_row:
         .byte 0
 
+uniform_rescan_pending:
+        .byte 0
+
 char_row_ptr_lo:
         .byte <$0518,<$0540,<$0568,<$0590,<$05b8
         .byte <$05e0,<$0608,<$0630,<$0658,<$0680
@@ -4808,87 +4900,6 @@ shift_left_39 .macro base
         sta \base+38
 .endm
 
-shift_right_39 .macro base
-        lda \base+38
-        sta \base+39
-        lda \base+37
-        sta \base+38
-        lda \base+36
-        sta \base+37
-        lda \base+35
-        sta \base+36
-        lda \base+34
-        sta \base+35
-        lda \base+33
-        sta \base+34
-        lda \base+32
-        sta \base+33
-        lda \base+31
-        sta \base+32
-        lda \base+30
-        sta \base+31
-        lda \base+29
-        sta \base+30
-        lda \base+28
-        sta \base+29
-        lda \base+27
-        sta \base+28
-        lda \base+26
-        sta \base+27
-        lda \base+25
-        sta \base+26
-        lda \base+24
-        sta \base+25
-        lda \base+23
-        sta \base+24
-        lda \base+22
-        sta \base+23
-        lda \base+21
-        sta \base+22
-        lda \base+20
-        sta \base+21
-        lda \base+19
-        sta \base+20
-        lda \base+18
-        sta \base+19
-        lda \base+17
-        sta \base+18
-        lda \base+16
-        sta \base+17
-        lda \base+15
-        sta \base+16
-        lda \base+14
-        sta \base+15
-        lda \base+13
-        sta \base+14
-        lda \base+12
-        sta \base+13
-        lda \base+11
-        sta \base+12
-        lda \base+10
-        sta \base+11
-        lda \base+9
-        sta \base+10
-        lda \base+8
-        sta \base+9
-        lda \base+7
-        sta \base+8
-        lda \base+6
-        sta \base+7
-        lda \base+5
-        sta \base+6
-        lda \base+4
-        sta \base+5
-        lda \base+3
-        sta \base+4
-        lda \base+2
-        sta \base+3
-        lda \base+1
-        sta \base+2
-        lda \base+0
-        sta \base+1
-.endm
-
 capture_row2_marker .macro
         lda $d011
         and #%10000000
@@ -5002,55 +5013,4 @@ unrolled_shift_left:
         shift_left_row_if_needed 12, $06f8, $daf8
         shift_left_row_if_needed 13, $0720, $db20
         shift_left_row_if_needed 14, $0748, $db48
-        rts
-
-unrolled_shift_right:
-        ; Top to bottom: row 0..14, char then color per row.
-        shift_right_39 $0518
-        shift_right_39 $d918
-        jsr fill_left_edge_row0_no_uniform
-        jsr maybe_commit_world_scroll
-        shift_right_39 $0540
-        shift_right_39 $d940
-        jsr maybe_commit_world_scroll
-        capture_row2_marker
-        shift_right_39 $0568
-        shift_right_39 $d968
-        jsr maybe_commit_world_scroll
-        shift_right_39 $0590
-        shift_right_39 $d990
-        jsr maybe_commit_world_scroll
-        shift_right_39 $05b8
-        shift_right_39 $d9b8
-        jsr maybe_commit_world_scroll
-        shift_right_39 $05e0
-        shift_right_39 $d9e0
-        jsr maybe_commit_world_scroll
-        shift_right_39 $0608
-        shift_right_39 $da08
-        jsr maybe_commit_world_scroll
-        shift_right_39 $0630
-        shift_right_39 $da30
-        jsr maybe_commit_world_scroll
-        shift_right_39 $0658
-        shift_right_39 $da58
-        jsr maybe_commit_world_scroll
-        shift_right_39 $0680
-        shift_right_39 $da80
-        jsr maybe_commit_world_scroll
-        shift_right_39 $06a8
-        shift_right_39 $daa8
-        jsr maybe_commit_world_scroll
-        shift_right_39 $06d0
-        shift_right_39 $dad0
-        jsr maybe_commit_world_scroll
-        shift_right_39 $06f8
-        shift_right_39 $daf8
-        jsr maybe_commit_world_scroll
-        shift_right_39 $0720
-        shift_right_39 $db20
-        jsr maybe_commit_world_scroll
-        shift_right_39 $0748
-        shift_right_39 $db48
-        jsr maybe_commit_world_scroll
         rts
