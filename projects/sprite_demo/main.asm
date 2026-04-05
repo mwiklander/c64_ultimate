@@ -497,12 +497,6 @@ irq_hud_line_done:
         jmp irq_done
 
 irq_shift_phase:
-        lda pending_coarse_shift
-        bne irq_shift_check_direction
-        jmp irq_shift_to_hud
-irq_shift_check_direction:
-        cmp #1
-        beq irq_shift_right
         jmp irq_shift_to_hud
 
 irq_shift_left:
@@ -779,8 +773,12 @@ cam_left_done:
 
 process_pending_coarse_shift:
         lda pending_coarse_shift
+        beq process_pending_coarse_shift_done
+        cmp #1
+        beq process_pending_coarse_shift_left
         cmp #2
         bne process_pending_coarse_shift_done
+process_pending_coarse_shift_right:
         lda #0
         sta fine_scroll
         jsr apply_fine_scroll
@@ -793,6 +791,20 @@ process_pending_coarse_shift:
         lda #0
         sta pending_coarse_shift
 process_pending_coarse_shift_done:
+        rts
+
+process_pending_coarse_shift_left:
+        lda #7
+        sta fine_scroll
+        jsr apply_fine_scroll
+        lda #0
+        sta early_world_commit_done
+        lda d016_base
+        sta $d016
+        inc scroll_col
+        jsr draw_world_shift_left
+        lda #0
+        sta pending_coarse_shift
         rts
 
 key_left:
