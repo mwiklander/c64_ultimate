@@ -296,6 +296,7 @@ frame_done:
         jsr update_bird
         jsr update_aux_sprite_msb
         jsr update_audio
+        jsr refresh_uniform_row_idle
 
         ; Frame timing marker: green when logic/draw is done.
         lda #$05
@@ -374,45 +375,45 @@ done_input:
 
 update_run_speed:
         lda jump_phase
-        beq run_on_ground
+        beq run_speed_on_ground
         lda #1
         sta move_step
         rts
 
-run_on_ground:
+run_speed_on_ground:
         lda left_down
-        beq check_run_right
+        beq run_speed_check_right
         lda right_down
-        bne reset_run_speed
+        bne run_speed_reset
         inc hold_left
         lda #0
         sta hold_right
         lda hold_left
         cmp #4
-        bcc walk_speed
+        bcc run_speed_walk
         lda #2
         sta move_step
         rts
 
-check_run_right:
+run_speed_check_right:
         lda right_down
-        beq reset_run_speed
+        beq run_speed_reset
         inc hold_right
         lda #0
         sta hold_left
         lda hold_right
         cmp #4
-        bcc walk_speed
+        bcc run_speed_walk
         lda #2
         sta move_step
         rts
 
-walk_speed:
+run_speed_walk:
         lda #1
         sta move_step
         rts
 
-reset_run_speed:
+run_speed_reset:
         lda #0
         sta hold_left
         sta hold_right
@@ -1107,8 +1108,8 @@ not_d_key:
         lda #67
         sta action_key
         jmp action_key_done
-not_c_key:
 
+not_c_key:
         ; Row $F7: 'B' (bit4)
         sei
         lda #$f7
@@ -1144,6 +1145,7 @@ check_level_hotkey:
         sta jump_phase
         sta jump_air_dir
         jsr clear_center_message
+        jsr clear_current_level_collectible_state
         jsr start_level
         lda #0
         sta action_key
@@ -2541,11 +2543,14 @@ clear_collectible_tile:
         lda hit_row
         sec
         sbc #7
-        jsr set_level_row_ptr
-        ldy world_col
-        lda #0
-        sta ($fb),y
+        pha
+        jsr mark_collectible_removed
         jsr draw_single_world_cell
+        pla
+        jsr update_uniform_row_state
+        jsr refresh_scroll_skip_rows
+        jsr draw_bottom_row_debug
+        rts
 
 draw_single_world_cell:
         ; Update only the changed visible world cell after collectible pickup.
@@ -2585,8 +2590,6 @@ draw_single_world_cell:
         sta ($fd),y
 
 draw_single_cell_done:
-        jsr draw_bottom_row_debug
-
 collectibles_done:
         rts
 
@@ -2925,6 +2928,7 @@ end_prompt_done:
 
 restart_game:
         jsr clear_center_message
+        jsr clear_collectible_state
         lda #0
         sta current_level
         sta end_timer
@@ -3031,13 +3035,26 @@ draw_next:
         beq draw_world_done
         jmp draw_world_loop
 draw_world_done:
+        jsr scan_uniform_rows
         jsr draw_bottom_row_debug
         rts
 
 draw_world_shift_left:
         lda #$01
         sta $d020
+        lda scroll_skip_row_count
+        bne draw_world_shift_left_skip
+        lda level_height
+        sta coarse_rows_updated
+        jsr unrolled_shift_left_full
+        jmp draw_world_shift_left_done
+draw_world_shift_left_skip:
+        lda level_height
+        sec
+        sbc scroll_skip_row_count
+        sta coarse_rows_updated
         jsr unrolled_shift_left
+draw_world_shift_left_done:
         jsr fill_right_edge_column
         jsr draw_bottom_row_debug
         lda #$05
@@ -3047,7 +3064,19 @@ draw_world_shift_left:
 draw_world_shift_right:
         lda #$01
         sta $d020
+        lda scroll_skip_row_count
+        bne draw_world_shift_right_skip
+        lda level_height
+        sta coarse_rows_updated
+        jsr unrolled_shift_right_full
+        jmp draw_world_shift_right_done
+draw_world_shift_right_skip:
+        lda level_height
+        sec
+        sbc scroll_skip_row_count
+        sta coarse_rows_updated
         jsr unrolled_shift_right
+draw_world_shift_right_done:
         jsr fill_left_edge_column
         jsr draw_bottom_row_debug
         lda #$05
@@ -3064,9 +3093,13 @@ fill_left_edge_row0:
         jsr get_tile_by_row
         ldx #0
         jsr decode_tile_char_color
+        sta draw_char_tmp
         sta $0518
         tya
         sta $d918
+        lda draw_char_tmp
+        ldx #0
+        jsr update_uniform_row_after_edge
         rts
 
 fill_right_edge_row0:
@@ -3078,9 +3111,13 @@ fill_right_edge_row0:
         jsr get_tile_by_row
         ldx #0
         jsr decode_tile_char_color
+        sta draw_char_tmp
         sta $053f
         tya
         sta $d93f
+        lda draw_char_tmp
+        ldx #0
+        jsr update_uniform_row_after_edge
         rts
 
 fill_left_edge_column:
@@ -3111,6 +3148,11 @@ fill_left_edge_row_loop:
         lda draw_color_tmp
         sta ($fd),y
 
+        lda draw_char_tmp
+        ldx shift_row_save
+        jsr update_uniform_row_after_edge
+
+fill_left_edge_next_row:
         inx
         cpx #15
         bcc fill_left_edge_row_loop
@@ -3146,6 +3188,11 @@ fill_right_edge_row_loop:
         lda draw_color_tmp
         sta ($fd),y
 
+        lda draw_char_tmp
+        ldx shift_row_save
+        jsr update_uniform_row_after_edge
+
+fill_right_edge_next_row:
         inx
         cpx #15
         bcc fill_right_edge_row_loop
@@ -3153,54 +3200,144 @@ fill_right_edge_row_loop:
 
 draw_bottom_row_debug:
         lda debug_rows_enabled
-        beq draw_bottom_row_debug_done
+        bne draw_bottom_row_debug_active
+        jmp draw_bottom_row_debug_done
 
-        ; Labels: "13:" and "14:" on rows 1 and 2.
-        lda #49
-        sta $0428
-        sta $0450
-        lda #51
-        sta $0429
-        lda #52
-        sta $0451
+draw_bottom_row_debug_active:
+        ; Show uniform-row count as "UF:nn".
+        lda #21
+        sta $0430
+        lda #6
+        sta $0431
         lda #58
-        sta $042a
-        sta $0452
+        sta $0432
         lda #$0f
-        sta $d828
-        sta $d829
-        sta $d82a
-        sta $d850
-        sta $d851
-        sta $d852
+        sta $d830
+        sta $d831
+        sta $d832
 
-        ldx #0
-debug_rows_loop:
-        txa
-        clc
-        adc scroll_col
-        sta world_col
-
-        lda #13
-        jsr get_tile_by_row
+        lda uniform_row_count
+        cmp #10
+        bcc debug_uniform_single_digit
+        sec
+        sbc #10
+        pha
+        lda #49
+        sta $0433
+        lda #$0f
+        sta $d833
+        pla
         clc
         adc #48
-        sta $042b,x
+        sta $0434
         lda #$0f
-        sta $d82b,x
+        sta $d834
+        jmp debug_uniform_count_done
 
-        lda #14
-        jsr get_tile_by_row
+debug_uniform_single_digit:
+        pha
+        lda #32
+        sta $0433
+        lda #$0f
+        sta $d833
+        pla
         clc
         adc #48
-        sta $0453,x
+        sta $0434
         lda #$0f
-        sta $d853,x
+        sta $d834
 
-        inx
-        cpx #12
-        bne debug_rows_loop
+debug_uniform_count_done:
 
+        ; Show currently skippable rows as "SK:nn".
+        lda #19
+        sta $0440
+        lda #11
+        sta $0441
+        lda #58
+        sta $0442
+        lda #$0f
+        sta $d840
+        sta $d841
+        sta $d842
+
+        lda scroll_skip_row_count
+        cmp #10
+        bcc debug_skip_single_digit
+        sec
+        sbc #10
+        pha
+        lda #49
+        sta $0443
+        lda #$0f
+        sta $d843
+        pla
+        clc
+        adc #48
+        sta $0444
+        lda #$0f
+        sta $d844
+        jmp debug_skip_count_done
+
+debug_skip_single_digit:
+        pha
+        lda #32
+        sta $0443
+        lda #$0f
+        sta $d843
+        pla
+        clc
+        adc #48
+        sta $0444
+        lda #$0f
+        sta $d844
+
+debug_skip_count_done:
+
+        ; Show rows updated in the last coarse scroll as "RU:nn".
+        lda #18
+        sta $0438
+        lda #21
+        sta $0439
+        lda #58
+        sta $043a
+        lda #$0f
+        sta $d838
+        sta $d839
+        sta $d83a
+
+        lda coarse_rows_updated
+        cmp #10
+        bcc debug_rows_single_digit
+        sec
+        sbc #10
+        pha
+        lda #49
+        sta $043b
+        lda #$0f
+        sta $d83b
+        pla
+        clc
+        adc #48
+        sta $043c
+        lda #$0f
+        sta $d83c
+        jmp debug_rows_count_done
+
+debug_rows_single_digit:
+        pha
+        lda #32
+        sta $043b
+        lda #$0f
+        sta $d83b
+        pla
+        clc
+        adc #48
+        sta $043c
+        lda #$0f
+        sta $d83c
+
+debug_rows_count_done:
 draw_bottom_row_debug_done:
         rts
 
@@ -3413,6 +3550,23 @@ get_tile_by_row:
         jsr set_level_row_ptr
         ldy world_col
         lda ($fb),y
+        cmp #5
+        bcc get_tile_by_row_done
+        cmp #8
+        bcs get_tile_by_row_done
+        sta level_tile_tmp
+        txa
+        pha
+        lda row_index
+        jsr is_collectible_removed
+        pla
+        tax
+        bcc get_tile_by_row_active
+        lda #0
+        rts
+get_tile_by_row_active:
+        lda level_tile_tmp
+get_tile_by_row_done:
         rts
 
 set_level_row_ptr:
@@ -3432,6 +3586,265 @@ set_level_row_ptr:
         sta $fb
         lda level_row_ptr_hi,y
         sta $fc
+        rts
+
+set_collectible_row_ptr:
+        ; A = row index. Select runtime collectible state row for current level.
+        sta row_index
+        lda current_level
+        asl
+        asl
+        asl
+        asl
+        sec
+        sbc current_level
+        clc
+        adc row_index
+        sta collectible_row_index
+
+        lda collectible_row_index
+        sta collectible_offset_lo
+        lda #0
+        sta collectible_offset_hi
+
+        asl collectible_offset_lo
+        rol collectible_offset_hi
+        asl collectible_offset_lo
+        rol collectible_offset_hi
+
+        lda collectible_offset_lo
+        sta collectible_mul_lo
+        lda collectible_offset_hi
+        sta collectible_mul_hi
+
+        asl collectible_offset_lo
+        rol collectible_offset_hi
+
+        clc
+        lda collectible_offset_lo
+        adc collectible_mul_lo
+        sta collectible_offset_lo
+        lda collectible_offset_hi
+        adc collectible_mul_hi
+        sta collectible_offset_hi
+
+        clc
+        lda #<level_collectible_state
+        adc collectible_offset_lo
+        sta $fd
+        lda #>level_collectible_state
+        adc collectible_offset_hi
+        sta $fe
+        rts
+
+is_collectible_removed:
+        jsr set_collectible_row_ptr
+        lda world_col
+        lsr
+        lsr
+        lsr
+        tay
+        lda world_col
+        and #%00000111
+        tax
+        lda collectible_bit_masks,x
+        and ($fd),y
+        beq collectible_not_removed
+        sec
+        rts
+collectible_not_removed:
+        clc
+        rts
+
+mark_collectible_removed:
+        jsr set_collectible_row_ptr
+        lda world_col
+        lsr
+        lsr
+        lsr
+        tay
+        lda world_col
+        and #%00000111
+        tax
+        lda collectible_bit_masks,x
+        ora ($fd),y
+        sta ($fd),y
+        rts
+
+clear_collectible_state:
+        lda #0
+        ldx #0
+clear_collectible_state_loop:
+        sta level_collectible_state,x
+        sta level_collectible_state+$100,x
+        sta level_collectible_state+$200,x
+        sta level_collectible_state+$300,x
+        inx
+        bne clear_collectible_state_loop
+        rts
+
+scan_uniform_rows:
+        lda #0
+        sta uniform_row_count
+        sta scroll_skip_row_count
+        sta uniform_idle_row
+        ldx #0
+scan_uniform_rows_clear_loop:
+        lda #$ff
+        sta uniform_row_tiles,x
+        inx
+        cpx #LEVEL_ROWS
+        bcc scan_uniform_rows_clear_loop
+
+        ldx #0
+scan_uniform_rows_loop:
+        txa
+        jsr update_uniform_row_state
+        inx
+        cpx level_height
+        bcc scan_uniform_rows_loop
+        jsr refresh_scroll_skip_rows
+        rts
+
+update_uniform_row_state:
+        sta row_index
+        txa
+        pha
+        tya
+        pha
+        ldx row_index
+        lda char_row_ptr_lo,x
+        sta $fb
+        lda char_row_ptr_hi,x
+        sta $fc
+        lda color_row_ptr_lo,x
+        sta $fd
+        lda color_row_ptr_hi,x
+        sta $fe
+
+        ldy #0
+        lda ($fb),y
+        sta uniform_candidate_tile
+        lda ($fd),y
+        sta uniform_candidate_color
+        iny
+update_uniform_row_loop:
+        cpy #40
+        bcs uniform_row_store_same
+        lda ($fb),y
+        cmp uniform_candidate_tile
+        bne uniform_row_store_mixed
+        lda ($fd),y
+        cmp uniform_candidate_color
+        bne uniform_row_store_mixed
+        iny
+        bne update_uniform_row_loop
+
+uniform_row_store_same:
+        lda uniform_candidate_tile
+        ldx row_index
+        jsr store_uniform_row_state
+        jmp uniform_row_restore
+
+uniform_row_store_mixed:
+        lda #$ff
+        ldx row_index
+        jsr store_uniform_row_state
+
+uniform_row_restore:
+        pla
+        tay
+        pla
+        tax
+        rts
+
+store_uniform_row_state:
+        cmp uniform_row_tiles,x
+        beq store_uniform_row_done
+        ldy uniform_row_tiles,x
+        sta uniform_row_tiles,x
+        cpy #$ff
+        bne store_uniform_old_uniform
+        cmp #$ff
+        beq store_uniform_row_done
+        inc uniform_row_count
+        jmp store_uniform_row_done
+
+store_uniform_old_uniform:
+        cmp #$ff
+        bne store_uniform_row_done
+        dec uniform_row_count
+
+store_uniform_row_done:
+        lda uniform_row_count
+        sta scroll_skip_row_count
+        rts
+
+update_uniform_row_after_edge:
+        sta uniform_candidate_tile
+        lda uniform_row_tiles,x
+        cmp #$ff
+        beq update_uniform_row_after_edge_done
+        cmp uniform_candidate_tile
+        beq update_uniform_row_after_edge_done
+        lda #$ff
+        jsr store_uniform_row_state
+update_uniform_row_after_edge_done:
+        rts
+
+refresh_scroll_skip_rows:
+        lda uniform_row_count
+        sta scroll_skip_row_count
+        rts
+
+refresh_uniform_row_idle:
+        lda pending_coarse_shift
+        bne refresh_uniform_row_idle_done
+        lda level_height
+        beq refresh_uniform_row_idle_done
+
+        lda uniform_idle_row
+        cmp level_height
+        bcc refresh_uniform_row_idle_check
+        lda #0
+        sta uniform_idle_row
+
+refresh_uniform_row_idle_check:
+        ldx uniform_idle_row
+        lda uniform_row_tiles,x
+        cmp #$ff
+        bne refresh_uniform_row_idle_advance
+        txa
+        jsr update_uniform_row_state
+
+refresh_uniform_row_idle_advance:
+        inc uniform_idle_row
+        lda uniform_idle_row
+        cmp level_height
+        bcc refresh_uniform_row_idle_done
+        lda #0
+        sta uniform_idle_row
+
+refresh_uniform_row_idle_done:
+        rts
+
+clear_current_level_collectible_state:
+        lda #0
+        sta collectible_clear_row
+clear_current_level_row_loop:
+        lda collectible_clear_row
+        jsr set_collectible_row_ptr
+        lda #0
+        ldy #0
+clear_current_level_col_loop:
+        sta ($fd),y
+        iny
+        cpy #12
+        bne clear_current_level_col_loop
+        inc collectible_clear_row
+        lda collectible_clear_row
+        cmp #LEVEL_ROWS
+        bcc clear_current_level_row_loop
         rts
 
 start_level:
@@ -3469,6 +3882,8 @@ start_level:
         sta level_height
         lda level_max_scroll_table,y
         sta max_scroll
+        lda level_height
+        sta coarse_rows_updated
 
         jsr apply_fine_scroll
 
@@ -3929,6 +4344,10 @@ gameplay_music_len:
         .byte 6,6,6,6,6,6,6,6
         .byte 6,6,6,6,6,6,12,12
 
+collectible_bit_masks:
+        .byte %00000001,%00000010,%00000100,%00001000
+        .byte %00010000,%00100000,%01000000,%10000000
+
 sample_x:
         .byte 0
 
@@ -3972,7 +4391,7 @@ level_requires_key:
         .byte 0
 
 debug_rows_enabled:
-        .byte 0
+        .byte 1
 
 fine_scroll:
         .byte 0
@@ -4040,6 +4459,51 @@ draw_color_tmp:
 screen_col:
         .byte 0
 
+level_tile_tmp:
+        .byte 0
+
+collectible_row_index:
+        .byte 0
+
+collectible_offset_lo:
+        .byte 0
+
+collectible_offset_hi:
+        .byte 0
+
+collectible_mul_lo:
+        .byte 0
+
+collectible_mul_hi:
+        .byte 0
+
+collectible_clear_row:
+        .byte 0
+
+uniform_scan_col:
+        .byte 0
+
+uniform_candidate_tile:
+        .byte $ff
+
+uniform_candidate_color:
+        .byte $00
+
+uniform_row_tiles:
+        .fill LEVEL_ROWS,$ff
+
+uniform_row_count:
+        .byte 0
+
+scroll_skip_row_count:
+        .byte 0
+
+uniform_idle_row:
+        .byte 0
+
+coarse_rows_updated:
+        .byte 15
+
 char_row_ptr_lo:
         .byte <$0518,<$0540,<$0568,<$0590,<$05b8
         .byte <$05e0,<$0608,<$0630,<$0658,<$0680
@@ -4071,6 +4535,9 @@ prompt_shown:
 
 end_wait_release:
         .byte 0
+
+level_collectible_state:
+        .fill 1024,0
 
 *=$3c00
 sprite_frame_a:
@@ -4464,7 +4931,61 @@ row2_marker_store_line\@:
         sta row2_marker_line
 .endm
 
-unrolled_shift_left:
+shift_left_row0_if_needed .macro
+        lda uniform_row_tiles+0
+        cmp #$ff
+        beq do_shift\@
+        jsr maybe_commit_world_scroll
+        jmp shift_exit\@
+do_shift\@:
+        shift_left_39 $0518
+        shift_left_39 $d918
+        jsr fill_right_edge_row0
+        jsr maybe_commit_world_scroll
+shift_exit\@:
+.endm
+
+shift_left_row_if_needed .macro row, base, colorbase
+        lda uniform_row_tiles+\row
+        cmp #$ff
+        beq do_shift\row
+        jsr maybe_commit_world_scroll
+        jmp shift_exit\row
+do_shift\row:
+        shift_left_39 \base
+        shift_left_39 \colorbase
+        jsr maybe_commit_world_scroll
+shift_exit\row:
+.endm
+
+shift_right_row0_if_needed .macro
+        lda uniform_row_tiles+0
+        cmp #$ff
+        beq do_shift\@
+        jsr maybe_commit_world_scroll
+        jmp shift_exit\@
+do_shift\@:
+        shift_right_39 $0518
+        shift_right_39 $d918
+        jsr fill_left_edge_row0
+        jsr maybe_commit_world_scroll
+shift_exit\@:
+.endm
+
+shift_right_row_if_needed .macro row, base, colorbase
+        lda uniform_row_tiles+\row
+        cmp #$ff
+        beq do_shift\row
+        jsr maybe_commit_world_scroll
+        jmp shift_exit\row
+do_shift\row:
+        shift_right_39 \base
+        shift_right_39 \colorbase
+        jsr maybe_commit_world_scroll
+shift_exit\row:
+.endm
+
+unrolled_shift_left_full:
         ; Top to bottom: row 0..14, char then color per row.
         shift_left_39 $0518
         shift_left_39 $d918
@@ -4515,7 +5036,7 @@ unrolled_shift_left:
         jsr maybe_commit_world_scroll
         rts
 
-unrolled_shift_right:
+unrolled_shift_right_full:
         ; Top to bottom: row 0..14, char then color per row.
         shift_right_39 $0518
         shift_right_39 $d918
@@ -4564,4 +5085,146 @@ unrolled_shift_right:
         shift_right_39 $0748
         shift_right_39 $db48
         jsr maybe_commit_world_scroll
+        rts
+
+unrolled_shift_left:
+        ; Top to bottom: shift only mixed rows, skip uniform rows.
+        shift_left_row0_if_needed
+        shift_left_row_if_needed 1, $0540, $d940
+        capture_row2_marker
+        shift_left_row_if_needed 2, $0568, $d968
+        shift_left_row_if_needed 3, $0590, $d990
+        shift_left_row_if_needed 4, $05b8, $d9b8
+        shift_left_row_if_needed 5, $05e0, $d9e0
+        shift_left_row_if_needed 6, $0608, $da08
+        shift_left_row_if_needed 7, $0630, $da30
+        shift_left_row_if_needed 8, $0658, $da58
+        shift_left_row_if_needed 9, $0680, $da80
+        shift_left_row_if_needed 10, $06a8, $daa8
+        shift_left_row_if_needed 11, $06d0, $dad0
+        shift_left_row_if_needed 12, $06f8, $daf8
+        shift_left_row_if_needed 13, $0720, $db20
+        shift_left_row_if_needed 14, $0748, $db48
+        rts
+
+unrolled_shift_left_from_row3:
+        shift_left_39 $0590
+        shift_left_39 $d990
+        jsr maybe_commit_world_scroll
+unrolled_shift_left_from_row4:
+        shift_left_39 $05b8
+        shift_left_39 $d9b8
+        jsr maybe_commit_world_scroll
+unrolled_shift_left_from_row5:
+        shift_left_39 $05e0
+        shift_left_39 $d9e0
+        jsr maybe_commit_world_scroll
+unrolled_shift_left_from_row6:
+        shift_left_39 $0608
+        shift_left_39 $da08
+        jsr maybe_commit_world_scroll
+unrolled_shift_left_from_row7:
+        shift_left_39 $0630
+        shift_left_39 $da30
+        jsr maybe_commit_world_scroll
+unrolled_shift_left_from_row8:
+        shift_left_39 $0658
+        shift_left_39 $da58
+        jsr maybe_commit_world_scroll
+unrolled_shift_left_from_row9:
+        shift_left_39 $0680
+        shift_left_39 $da80
+        jsr maybe_commit_world_scroll
+unrolled_shift_left_from_row10:
+        shift_left_39 $06a8
+        shift_left_39 $daa8
+        jsr maybe_commit_world_scroll
+unrolled_shift_left_from_row11:
+        shift_left_39 $06d0
+        shift_left_39 $dad0
+        jsr maybe_commit_world_scroll
+unrolled_shift_left_from_row12:
+        shift_left_39 $06f8
+        shift_left_39 $daf8
+        jsr maybe_commit_world_scroll
+unrolled_shift_left_from_row13:
+        shift_left_39 $0720
+        shift_left_39 $db20
+        jsr maybe_commit_world_scroll
+unrolled_shift_left_from_row14:
+        shift_left_39 $0748
+        shift_left_39 $db48
+        jsr maybe_commit_world_scroll
+unrolled_shift_left_done:
+        rts
+
+unrolled_shift_right:
+        ; Top to bottom: shift only mixed rows, skip uniform rows.
+        shift_right_row0_if_needed
+        shift_right_row_if_needed 1, $0540, $d940
+        capture_row2_marker
+        shift_right_row_if_needed 2, $0568, $d968
+        shift_right_row_if_needed 3, $0590, $d990
+        shift_right_row_if_needed 4, $05b8, $d9b8
+        shift_right_row_if_needed 5, $05e0, $d9e0
+        shift_right_row_if_needed 6, $0608, $da08
+        shift_right_row_if_needed 7, $0630, $da30
+        shift_right_row_if_needed 8, $0658, $da58
+        shift_right_row_if_needed 9, $0680, $da80
+        shift_right_row_if_needed 10, $06a8, $daa8
+        shift_right_row_if_needed 11, $06d0, $dad0
+        shift_right_row_if_needed 12, $06f8, $daf8
+        shift_right_row_if_needed 13, $0720, $db20
+        shift_right_row_if_needed 14, $0748, $db48
+        rts
+
+unrolled_shift_right_from_row3:
+        shift_right_39 $0590
+        shift_right_39 $d990
+        jsr maybe_commit_world_scroll
+unrolled_shift_right_from_row4:
+        shift_right_39 $05b8
+        shift_right_39 $d9b8
+        jsr maybe_commit_world_scroll
+unrolled_shift_right_from_row5:
+        shift_right_39 $05e0
+        shift_right_39 $d9e0
+        jsr maybe_commit_world_scroll
+unrolled_shift_right_from_row6:
+        shift_right_39 $0608
+        shift_right_39 $da08
+        jsr maybe_commit_world_scroll
+unrolled_shift_right_from_row7:
+        shift_right_39 $0630
+        shift_right_39 $da30
+        jsr maybe_commit_world_scroll
+unrolled_shift_right_from_row8:
+        shift_right_39 $0658
+        shift_right_39 $da58
+        jsr maybe_commit_world_scroll
+unrolled_shift_right_from_row9:
+        shift_right_39 $0680
+        shift_right_39 $da80
+        jsr maybe_commit_world_scroll
+unrolled_shift_right_from_row10:
+        shift_right_39 $06a8
+        shift_right_39 $daa8
+        jsr maybe_commit_world_scroll
+unrolled_shift_right_from_row11:
+        shift_right_39 $06d0
+        shift_right_39 $dad0
+        jsr maybe_commit_world_scroll
+unrolled_shift_right_from_row12:
+        shift_right_39 $06f8
+        shift_right_39 $daf8
+        jsr maybe_commit_world_scroll
+unrolled_shift_right_from_row13:
+        shift_right_39 $0720
+        shift_right_39 $db20
+        jsr maybe_commit_world_scroll
+unrolled_shift_right_from_row14:
+        shift_right_39 $0748
+        shift_right_39 $db48
+        jsr maybe_commit_world_scroll
+unrolled_shift_right_done:
         rts
